@@ -14,6 +14,7 @@ import re
 
 import aiosqlite
 
+from archivum.markdown_text import lede as page_lede
 from archivum.knowledge.models import Citation, KnowledgeObject
 from archivum.knowledge.personal_root import ensure_personal_root, link_to_self
 from archivum.knowledge.repository import KnowledgeRepository
@@ -340,49 +341,6 @@ async def register_codegraph_asset(
         change_note=change_note,
     )
     return asset_id
-
-
-# Enough to say what a page is about without turning a card into a paragraph.
-_LEDE_CHARS = 180
-
-
-def page_lede(markdown: str) -> str:
-    """The first line of a page that actually says something.
-
-    Skips frontmatter, headings, and the structural noise that every page has
-    in common — a summary made of those describes markdown, not this page.
-    Returns "" when there is nothing but structure, so the caller can fall back
-    rather than print an empty card.
-    """
-    body = markdown or ""
-    if body.startswith("---"):
-        end = body.find("\n---", 3)
-        if end != -1:
-            body = body[end + 4 :]
-
-    in_fence = False
-    for raw in body.splitlines():
-        line = raw.strip()
-        if line.startswith("```") or line.startswith("~~~"):
-            in_fence = not in_fence
-            continue
-        if in_fence or not line:
-            continue
-        if line.startswith("#") or line.startswith(">"):
-            continue
-        if set(line) <= set("-*_= "):
-            continue
-        # Read as prose, so the markers that make it a list or a link are noise.
-        line = re.sub(r"^[-*+]\s+(\[[ xX]\]\s+)?", "", line)
-        line = re.sub(r"^\d+[.)]\s+", "", line)
-        line = re.sub(r"\[\[([^\]|]+)(?:\|([^\]]+))?\]\]", lambda m: m.group(2) or m.group(1), line)
-        line = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", line)
-        line = line.replace("**", "").replace("`", "")
-        line = line.strip()
-        if not line:
-            continue
-        return line if len(line) <= _LEDE_CHARS else line[: _LEDE_CHARS - 1].rstrip() + "…"
-    return ""
 
 
 def _self_citation(object_id: str, quote: str) -> Citation:

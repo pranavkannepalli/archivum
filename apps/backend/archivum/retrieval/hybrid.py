@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import re
 from dataclasses import dataclass
 from typing import Literal
 
 from archivum.config import Settings, get_settings
 from archivum.db import qdrant_client as qdrant
-from archivum.db.qdrant_client import strip_frontmatter
+from archivum.markdown_text import lede
 from archivum.db import sqlite
 from archivum.knowledge.models import Citation, ContextNode, ExtractionMethod
 from archivum.knowledge.personal_root import SELF_ID
@@ -181,9 +180,6 @@ def _page_metadata(
     return metadata
 
 
-_STRUCTURE_ONLY = set("-*_=# ")
-
-
 def above_floor(rows: list[dict], *, floor: float) -> list[dict]:
     """Drop dense matches too weak to mean anything.
 
@@ -196,32 +192,14 @@ def above_floor(rows: list[dict], *, floor: float) -> list[dict]:
 
 
 def readable_excerpt(markdown: str | None, *, limit: int = 200) -> str:
-    """The first line of a page that a person would recognise it by.
+    """The line of a page that explains why it came back.
 
     Excerpts used to be the raw first chunk, which is the YAML header on every
-    page — so every result in a list read identically and none of them told you
-    why it matched. Returns "" when there is nothing but structure, so the
-    caller can fall back rather than render an empty quote.
+    page — so every result read identically and none of them said why it
+    matched. Indexing now stores a real excerpt, and this stays as the fallback
+    for vectors written before that.
     """
-    body = strip_frontmatter(markdown or "")
-    in_fence = False
-    for raw in body.splitlines():
-        line = raw.strip()
-        if line.startswith("```") or line.startswith("~~~"):
-            in_fence = not in_fence
-            continue
-        if in_fence or not line or line.startswith("#"):
-            continue
-        if set(line) <= _STRUCTURE_ONLY:
-            continue
-        line = re.sub(r"^\s*[-*+]\s+(\[[ xX]\]\s+)?", "", line)
-        line = re.sub(r"^\s*\d+[.)]\s+", "", line)
-        line = re.sub(r"\[\[([^\]|]+)(?:\|([^\]]+))?\]\]", lambda m: m.group(2) or m.group(1), line)
-        line = line.replace("**", "").replace("`", "").strip()
-        if not line:
-            continue
-        return line if len(line) <= limit else line[: limit - 1].rstrip() + "…"
-    return ""
+    return lede(markdown, limit=limit)
 
 
 def _enrich_hit(

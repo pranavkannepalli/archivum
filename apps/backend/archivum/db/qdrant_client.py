@@ -21,6 +21,7 @@ from qdrant_client.models import (
 )
 
 from archivum.config import Settings, get_settings
+from archivum.markdown_text import lede, strip_frontmatter
 
 logger = logging.getLogger(__name__)
 
@@ -364,14 +365,6 @@ async def init_collection(settings: Settings | None = None) -> None:
 
 # ── CRUD ──────────────────────────────────────────────────────────────────────
 
-_FRONTMATTER_RE = re.compile(r"\A---\r?\n.*?\r?\n---\r?\n?", re.DOTALL)
-
-
-def strip_frontmatter(markdown: str) -> str:
-    """The page without its YAML header."""
-    return _FRONTMATTER_RE.sub("", markdown or "", count=1)
-
-
 def embeddable_text(title: str, markdown: str) -> str:
     """What should actually be embedded for a page.
 
@@ -407,6 +400,10 @@ async def upsert_page(
     await delete_page(slug, wiki_id, s)
 
     chunks = _chunk_text(embeddable_text(title, content))
+    # Stored once, from the markdown while it still has line breaks. The chunker
+    # collapses whitespace, so an excerpt recovered from a chunk cannot tell a
+    # heading from a sentence.
+    excerpt = lede(content)
     vectors = await embed_texts(chunks, s)
     logger.debug("Qdrant vectors ready", extra={"slug": slug, "chunks": len(chunks), "dim": len(vectors[0]) if vectors else 0})
     if vectors and len(vectors[0]) != int(embed_dim):
@@ -425,6 +422,7 @@ async def upsert_page(
                 "chunk_index": i,
                 "wiki_id": wiki_id,
                 "text": chunk,
+                "excerpt": excerpt,
                 "knowledge_projection": projection,
             },
         )
@@ -501,7 +499,7 @@ async def search(
             seen[slug] = {
                 "slug": slug,
                 "title": payload.get("title", ""),
-                "excerpt": payload.get("text", "")[:300],
+                "excerpt": payload.get("excerpt") or payload.get("text", "")[:300],
                 "score": hit.score,
                 "chunk_index": payload.get("chunk_index", 0),
             }
@@ -536,7 +534,8 @@ async def search_raw(
         {
             "slug": (r.payload or {}).get("slug", ""),
             "title": (r.payload or {}).get("title", ""),
-            "excerpt": (r.payload or {}).get("text", ""),
+            "excerpt": (r.payload or {}).get("excerpt")
+            or (r.payload or {}).get("text", ""),
             "score": r.score,
             "chunk_index": (r.payload or {}).get("chunk_index", 0),
         }
