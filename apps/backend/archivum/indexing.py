@@ -23,6 +23,7 @@ Two rules hold throughout:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -321,6 +322,14 @@ async def forget_page(
     return result
 
 
+# One sweep at a time, per process. Startup reconciles when
+# `vault_reconcile_on_start` is set, the vault watcher reconciles what changed,
+# and the reindex endpoint runs the same pass on demand — so without this, asking
+# for a reindex while the startup sweep was still going put two full passes over
+# the same pages at once and the loser died on `database is locked`.
+_RECONCILE_LOCK = asyncio.Lock()
+
+
 async def reconcile_vault(
     *, wiki_id: str, settings: Settings, force: bool = False
 ) -> list[ReindexResult]:
@@ -329,7 +338,18 @@ async def reconcile_vault(
     Files that changed while the app was not looking get reindexed; rows whose
     file has since disappeared get dropped. This is what makes editing the vault
     with an external tool safe.
+
+    Serialised against other sweeps: a caller that arrives mid-sweep waits for
+    it rather than racing it. Two passes over the same pages contend for the one
+    write lock and neither is doing anything the other is not.
     """
+    async with _RECONCILE_LOCK:
+        return await _reconcile_vault(wiki_id=wiki_id, settings=settings, force=force)
+
+
+async def _reconcile_vault(
+    *, wiki_id: str, settings: Settings, force: bool = False
+) -> list[ReindexResult]:
     results: list[ReindexResult] = []
     seen: set[str] = set()
 
