@@ -1028,17 +1028,24 @@ textarea.inp { height: auto; padding: 11px 14px; line-height: 1.6; resize: none;
 }
 /* Bullets and numbers sit in the margin so wrapped lines align to the text,
    not to the marker — the thing that makes a list read as a list. */
+/* Hanging indent, built from a gutter rather than a negative text-indent.
+   `text-indent: -26px` moved the *first* line of the block, which dragged the
+   bullet outside the document's left edge while every other block started at
+   the same 2px — so lists hung off to the left instead of lining up. The marker
+   now sits in a gutter the padding reserves for it: bullet flush with the text
+   column, content and wrapped lines indented past it. */
 .cm-markdown-unordered-list,
 .cm-markdown-ordered-list,
 .cm-markdown-task-open,
 .cm-markdown-task-done {
-  padding-left: 26px;
-  text-indent: -26px;
+  padding-left: 28px;
 }
 .cm-markdown-marker-unordered-list,
 .cm-markdown-marker-ordered-list {
   width: 26px;
-  text-indent: 0;
+  /* Pulls the marker back into the gutter, leaving its left edge at the same
+     2px as a paragraph. */
+  margin-left: -26px;
   color: var(--text-2);
 }
 .cm-markdown-marker-ordered-list { font-variant-numeric: tabular-nums; }
@@ -1046,7 +1053,7 @@ textarea.inp { height: auto; padding: 11px 14px; line-height: 1.6; resize: none;
 /* ---------------- tasks ---------------- */
 .cm-task-toggle {
   width: 26px;
-  text-indent: 0;
+  margin-left: -26px;
   background: none;
   border: 0;
   padding: 0;
@@ -1171,16 +1178,34 @@ textarea.inp { height: auto; padding: 11px 14px; line-height: 1.6; resize: none;
 .md-body a:hover, .shared-doc .body a:hover { text-decoration: underline; }
 
 /* Lists keep their marker in the margin and nest without collapsing. */
+/* Tailwind's preflight sets `list-style: none` on every list, so markers have
+   to be asked for again — without this a rendered list had no bullets at all,
+   only indented text. `outside` keeps the marker in the gutter the padding
+   reserves, so wrapped lines align with the first one instead of running back
+   under the bullet. */
+.md-body ul, .shared-doc .body ul { list-style: disc outside; }
+.md-body ol, .shared-doc .body ol { list-style: decimal outside; }
+.md-body ul ul, .shared-doc .body ul ul { list-style-type: circle; }
+.md-body ul ul ul, .shared-doc .body ul ul ul { list-style-type: square; }
 .md-body ul, .shared-doc .body ul,
-.md-body ol, .shared-doc .body ol { margin: 0 0 1em; padding-left: 1.4em; }
+.md-body ol, .shared-doc .body ol { margin: 0 0 1em; padding-left: 1.35em; }
 .md-body li, .shared-doc .body li { margin: 0.25em 0; }
 .md-body li > ul, .shared-doc .body li > ul,
 .md-body li > ol, .shared-doc .body li > ol { margin-bottom: 0; }
-/* GFM task lists: the checkbox belongs in the margin, not in the sentence. */
+/* GFM task lists: the checkbox takes the marker's place in the gutter rather
+   than sitting in the sentence. It must not also pull the row left of every
+   other list item — that is what made them look unaligned. */
 .md-body li:has(> input[type='checkbox']),
-.shared-doc .body li:has(> input[type='checkbox']) { list-style: none; margin-left: -1.25em; }
+.shared-doc .body li:has(> input[type='checkbox']) { list-style: none; }
 .md-body input[type='checkbox'],
-.shared-doc .body input[type='checkbox'] { margin-right: 0.55em; accent-color: var(--accent); }
+.shared-doc .body input[type='checkbox'] {
+  width: 0.95em;
+  height: 0.95em;
+  margin-left: -1.35em;
+  margin-right: 0.4em;
+  vertical-align: -0.1em;
+  accent-color: var(--accent);
+}
 
 .md-body code, .shared-doc .body code {
   font-family: var(--font-mono);
