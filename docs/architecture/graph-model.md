@@ -39,6 +39,8 @@ Details:
 
 The owner root is always included in a scoped audit, even though `person:self` lives in its own scope, because it is the hub most of the graph hangs off.
 
+A scope may be a wiki (`wiki:default`), the owner (`person:self`), or an indexed repository (`repo:atlas`) — see [code memory](./code-memory.md). Link scopes (`bridge`, `cross_repo`) hold edges that join two other scopes and belong to neither, so a scoped load also pulls in link edges touching its nodes together with what they point at. Repository scopes are authorised by the register rather than by the scope string.
+
 ## Legacy Compatibility Projection
 
 The following `Page` and `Entity` tables and edges are the legacy compatibility projection used by existing graph APIs and wikilink behavior. They are derived from canonical knowledge and should not be read as the complete canonical object model.

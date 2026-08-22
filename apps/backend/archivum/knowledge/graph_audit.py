@@ -27,6 +27,10 @@ _MODULARITY_EPSILON = 1e-12
 
 # Weighting for the surprise score. Structural novelty (few shared neighbours)
 # dominates; crossing a community boundary is the secondary signal.
+# Scopes that exist to join two other scopes rather than to hold a graph of
+# their own: cross-repository identity, and code-to-evidence bridging.
+LINK_SCOPES: tuple[str, ...] = ("bridge", "cross_repo")
+
 _NOVELTY_WEIGHT = 0.6
 _CROSS_COMMUNITY_WEIGHT = 0.4
 
@@ -88,6 +92,16 @@ class GraphReport:
     communities: tuple[Community, ...]
     surprising_links: tuple[SurprisingLink, ...]
     narrative: tuple[str, ...] = field(default=())
+    # Labels and kinds for every record in the report. Anything drawing the
+    # graph needs a name and a shape per node, and looking those up separately
+    # meant a second, differently-scoped request that missed everything when
+    # the report was pointed at a repository.
+    node_labels: dict[str, str] = field(default_factory=dict)
+    node_kinds: dict[str, str] = field(default_factory=dict)
+    # The relationships the analysis ran over. Without these a caller can only
+    # place clusters around a centre — a layout, not the graph. Restricted to
+    # edges whose endpoints are both in the report, so nothing dangles.
+    edge_list: tuple[tuple[str, str, str, str], ...] = field(default=())
 
 
 # ── Adjacency ─────────────────────────────────────────────────────────────
@@ -133,10 +147,11 @@ def detect_communities(
     )
 
     labels_by_node = {node.id: node.label for node in nodes}
+    kinds_by_node = {node.id: node.kind for node in nodes}
     communities = [
         Community(
             id=min(members),
-            label=_community_label(members, adjacency, labels_by_node),
+            label=_community_label(members, adjacency, labels_by_node, kinds_by_node),
             member_ids=tuple(sorted(members)),
         )
         for members in groups
@@ -218,13 +233,31 @@ def _greedy_modularity(adjacency: dict[str, set[str]]) -> list[list[str]]:
     return [sorted(group) for group in members.values()]
 
 
+# Kinds that name a cluster better than raw connectivity does. A file or a type
+# says what a cluster *is*; the most-called helper inside it only says what it
+# does, and a shared utility is exactly the node most likely to top the degree
+# count while being the least descriptive name available.
+_NAMING_KINDS: tuple[str, ...] = ("file", "type", "repo")
+
+
 def _community_label(
     members: list[str],
     adjacency: dict[str, set[str]],
     labels_by_node: dict[str, str],
+    kinds_by_node: dict[str, str] | None = None,
 ) -> str:
-    """Name a community after its most connected member."""
-    anchor = min(members, key=lambda node_id: (-len(adjacency[node_id]), node_id))
+    """Name a community after the member that best describes it."""
+    kinds_by_node = kinds_by_node or {}
+
+    def most_connected(candidates: list[str]) -> str:
+        return min(candidates, key=lambda node_id: (-len(adjacency[node_id]), node_id))
+
+    for kind in _NAMING_KINDS:
+        of_kind = [node_id for node_id in members if kinds_by_node.get(node_id) == kind]
+        if of_kind:
+            return labels_by_node.get(most_connected(of_kind), most_connected(of_kind))
+
+    anchor = most_connected(members)
     return labels_by_node.get(anchor, anchor)
 
 
@@ -404,6 +437,16 @@ def build_graph_report(
     communities = detect_communities(nodes, edges)
     links = surprising_links(nodes, edges, communities=communities, limit=surprise_limit)
 
+    # Nodes and edges are scope-filtered by separate queries, so an edge can
+    # point at a record outside the audited scope — one the caller may not read
+    # and that `_add_incident_links` could not pull in. `build_adjacency` already
+    # ignores those, so clusters and orphans describe the trimmed graph; count
+    # the same trimmed set here or the narrative claims connectivity that is not
+    # there and a viewer draws fewer links than the header promises.
+    known_ids = {node.id for node in nodes}
+    visible_edges = [
+        edge for edge in edges if edge.src_id in known_ids and edge.dst_id in known_ids
+    ]
     by_kind = Counter(node.kind for node in nodes)
     by_method = Counter(node.extraction_method for node in nodes)
     self_cited = tuple(sorted(node.id for node in nodes if is_self_cited(node)))
@@ -415,7 +458,7 @@ def build_graph_report(
     report = GraphReport(
         scope=scope,
         node_count=len(nodes),
-        edge_count=len(edges),
+        edge_count=len(visible_edges),
         by_kind=dict(sorted(by_kind.items())),
         by_extraction_method=dict(sorted(by_method.items())),
         self_cited_ids=self_cited,
@@ -423,6 +466,12 @@ def build_graph_report(
         orphan_ids=orphans,
         communities=tuple(communities),
         surprising_links=tuple(links),
+        node_labels={node.id: node.label for node in nodes},
+        node_kinds={node.id: node.kind for node in nodes},
+        edge_list=tuple(
+            (edge.src_id, edge.dst_id, edge.rel_type, edge.extraction_method)
+            for edge in visible_edges
+        ),
     )
     return replace(report, narrative=_narrative(report))
 
@@ -483,20 +532,36 @@ async def audit_knowledge_graph(
     *,
     scope: str | None = None,
     surprise_limit: int = DEFAULT_SURPRISE_LIMIT,
+    allowed_scopes: set[str] | None = None,
 ) -> GraphReport:
-    nodes, edges = await load_graph(repo, scope=scope)
+    nodes, edges = await load_graph(repo, scope=scope, allowed_scopes=allowed_scopes)
     return build_graph_report(
         nodes, edges, scope=scope, surprise_limit=surprise_limit
     )
 
 
 async def load_graph(
-    repo: KnowledgeRepository, *, scope: str | None = None
+    repo: KnowledgeRepository,
+    *,
+    scope: str | None = None,
+    allowed_scopes: set[str] | None = None,
 ) -> tuple[list[KnowledgeObject], list[KnowledgeRelationship]]:
-    """Load a scoped graph, always including the owner root.
+    """Load a scoped graph, always including the owner root and any links in.
 
     `person:self` lives in its own scope but owns edges into every wiki scope,
     so omitting it would hide the hub that most of the graph hangs off.
+
+    Link scopes are the same problem one level out. A `decided_in` edge joins a
+    code symbol to the conversation it came from, so by construction it belongs
+    to neither the repository's scope nor the wiki's. Loading strictly by scope
+    would drop exactly the edges that explain why a thing exists — so links that
+    touch a loaded record are pulled in, along with what they point at.
+
+    Following a link crosses a scope boundary, so it needs its own authorisation.
+    `allowed_scopes` is what the caller may read; anything the caller has not
+    been granted is left out rather than fetched by id. Callers that pass nothing
+    get the requested scope only, because a link is not worth disclosing another
+    vault's records by default.
     """
     nodes = await repo.list_objects(scope=scope, limit=_AUDIT_OBJECT_LIMIT)
     if len(nodes) == _AUDIT_OBJECT_LIMIT:
@@ -508,7 +573,58 @@ async def load_graph(
         if root is not None:
             nodes.append(root)
     edges = await repo.list_relationships(scope=scope)
+
+    if scope is not None:
+        readable = set(allowed_scopes) if allowed_scopes is not None else {scope}
+        readable.add(scope)
+        nodes, edges = await _add_incident_links(repo, nodes, edges, readable)
     return nodes, edges
+
+
+async def _add_incident_links(
+    repo: KnowledgeRepository,
+    nodes: list[KnowledgeObject],
+    edges: list[KnowledgeRelationship],
+    readable_scopes: set[str],
+) -> tuple[list[KnowledgeObject], list[KnowledgeRelationship]]:
+    """Pull in link-scope edges whose far end the caller is allowed to read."""
+    known = {node.id for node in nodes}
+    incident: list[KnowledgeRelationship] = []
+    wanted: set[str] = set()
+
+    for link_scope in LINK_SCOPES:
+        for edge in await repo.list_relationships(scope=link_scope):
+            touches_src = edge.src_id in known
+            touches_dst = edge.dst_id in known
+            if not (touches_src or touches_dst):
+                continue
+            incident.append(edge)
+            if not touches_src:
+                wanted.add(edge.src_id)
+            if not touches_dst:
+                wanted.add(edge.dst_id)
+
+    if not incident:
+        return nodes, edges
+
+    # An edge is only kept once its far end has been fetched *and* cleared, so
+    # an unreadable neighbour discloses neither its label nor the fact of the
+    # connection.
+    disclosed: set[str] = set()
+    for node_id in sorted(wanted):
+        far_end = await repo.get_object(node_id)
+        if far_end is None or far_end.scope not in readable_scopes:
+            continue
+        nodes.append(far_end)
+        disclosed.add(node_id)
+
+    visible = known | disclosed
+    kept = [
+        edge
+        for edge in incident
+        if edge.src_id in visible and edge.dst_id in visible
+    ]
+    return nodes, [*edges, *kept]
 
 
 def report_to_dict(report: GraphReport) -> dict[str, Any]:
@@ -545,6 +661,12 @@ def report_to_dict(report: GraphReport) -> dict[str, Any]:
             for link in report.surprising_links
         ],
         "narrative": list(report.narrative),
+        "node_labels": report.node_labels,
+        "node_kinds": report.node_kinds,
+        "edges": [
+            {"source": src, "target": dst, "relation": rel, "extraction_method": method}
+            for src, dst, rel, method in report.edge_list
+        ],
     }
 
 

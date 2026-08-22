@@ -1,129 +1,205 @@
-import { useEffect, useMemo, useState } from 'react';
-import { useParams } from 'react-router-dom';
-import DOMPurify from 'dompurify';
-import { getShare } from '../api';
-import type { SharePage as SharePageType } from '../api';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useParams, useSearchParams } from 'react-router-dom';
+import {
+  commentOnShare,
+  getSharedResource,
+  openShareLink,
+  type SharedResource,
+} from '../api';
+import { Icon } from '../shell/Icon';
+import { renderMarkdown } from './markdown';
 
-function renderMarkdown(text: string): string {
-  return text
-    // Headings
-    .replace(/^### (.+)$/gm, '<h3 class="text-base font-semibold text-text-primary mt-4 mb-1">$1</h3>')
-    .replace(/^## (.+)$/gm, '<h2 class="text-lg font-semibold text-text-primary mt-5 mb-2">$1</h2>')
-    .replace(/^# (.+)$/gm, '<h1 class="text-xl font-bold text-text-primary mt-6 mb-2">$1</h1>')
-    // Bold + italic
-    .replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>')
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*(.+?)\*/g, '<em>$1</em>')
-    // Inline code
-    .replace(/`([^`]+)`/g, '<code class="px-1 py-0.5 rounded text-xs font-mono" style="background:#2a2a3a;color:#cba6f7">$1</code>')
-    // Code blocks
-    .replace(/```[\w]*\n([\s\S]*?)```/g, '<pre class="my-3 p-3 rounded overflow-x-auto text-xs font-mono" style="background:#2a2a3a;color:#cdd6f4"><code>$1</code></pre>')
-    // Blockquotes
-    .replace(/^> (.+)$/gm, '<blockquote class="border-l-2 pl-3 my-2 text-text-secondary italic" style="border-color:#4B91F1">$1</blockquote>')
-    // Unordered lists
-    .replace(/^[-*] (.+)$/gm, '<li class="ml-4 list-disc text-text-secondary">$1</li>')
-    // Ordered lists
-    .replace(/^\d+\. (.+)$/gm, '<li class="ml-4 list-decimal text-text-secondary">$1</li>')
-    // Links
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" class="text-accent hover:underline" target="_blank" rel="noopener">$1</a>')
-    // Horizontal rule
-    .replace(/^---$/gm, '<hr class="my-4" style="border-color:#3a3a4a">')
-    // Paragraphs (double newline)
-    .replace(/\n\n/g, '</p><p class="mb-3 text-text-secondary leading-relaxed">');
-}
-
+/**
+ * What a recipient sees.
+ *
+ * Built on the app's own tokens rather than a stripped-down public theme: a
+ * shared page should look like the place it came from. Citations render as
+ * plain titles unless the cited source was itself shared — linking them into a
+ * login wall is worse than not linking them at all.
+ */
 export default function SharePage() {
   const params = useParams();
-  const token = params['token'] as string | undefined;
+  const [search] = useSearchParams();
+  const token = params['token'];
+  const urn = search.get('urn');
 
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [share, setShare] = useState<SharePageType | null>(null);
+  const [resource, setResource] = useState<SharedResource | null>(null);
+  const [comment, setComment] = useState('');
+  // Navigating within a share keeps the credential you arrived with: a link
+  // holder stays on their token, a claimed recipient rides their session.
+  const linkTo = (target: string) =>
+    token
+      ? `/share/${token}?urn=${encodeURIComponent(target)}`
+      : `/shared/view?urn=${encodeURIComponent(target)}`;
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
 
-  useEffect(() => {
-    if (!token) return;
+  const load = useCallback(async () => {
     setLoading(true);
     setError(null);
-    setShare(null);
+    try {
+      // A urn means the recipient is navigating within what they were given;
+      // a bare token means they just opened the link they were sent.
+      if (urn) setResource(await getSharedResource(urn, token));
+      else if (token) setResource(await openShareLink(token));
+      else setError('This link is missing its token.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'This link no longer works.');
+    } finally {
+      setLoading(false);
+    }
+  }, [token, urn]);
 
-    getShare(token)
-      .then((s) => setShare(s))
-      .catch((e) => setError((e as Error).message))
-      .finally(() => setLoading(false));
-  }, [token]);
+  useEffect(() => {
+    void load();
+  }, [load]);
 
-  const body = share?.type === 'query' ? share.answer : share?.content;
-  const sanitizedHtml = useMemo(() => {
-    if (!body) return '';
-    // Re-wrap as a single HTML blob to keep styling consistent.
-    const html = `<p class="mb-3 text-text-secondary leading-relaxed">${renderMarkdown(body)}</p>`;
-    return DOMPurify.sanitize(html, {
-      ALLOWED_ATTR: ['class', 'style', 'href', 'target', 'rel'],
-    });
-  }, [body]);
+  const html = useMemo(
+    // A recipient has no vault to open, so a wikilink renders as text rather
+    // than as a link to a login wall.
+    () => (resource?.body ? renderMarkdown(resource.body, { wikilinks: 'text' }) : ''),
+    [resource?.body],
+  );
+
+  async function submitComment() {
+    const text = comment.trim();
+    if (!text || !resource || sending) return;
+    setSending(true);
+    try {
+      await commentOnShare(resource.urn, text);
+      setComment('');
+      setSent(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not send that');
+    } finally {
+      setSending(false);
+    }
+  }
 
   return (
-    <div className="min-h-screen bg-bg">
-      <div className="max-w-3xl mx-auto px-4 py-10">
+    <div className="shared-root">
+      <div className="col">
         {loading && (
-          <div className="space-y-2">
+          <div className="shared-doc">
             <div className="skeleton h-6 w-2/3" />
-            <div className="skeleton h-4 w-full" />
-            <div className="skeleton h-4 w-5/6" />
+            <div className="skeleton mt-3 h-4 w-full" />
+            <div className="skeleton mt-2 h-4 w-5/6" />
           </div>
         )}
 
         {!loading && error && (
-          <div className="rounded-lg p-3 border border-red-400/25 bg-red-500/10 text-sm text-red-300">
-            {error}
+          <div className="shared-gone">
+            <Icon name="lock" size={22} />
+            <h1>Nothing here</h1>
+            <p>{error}</p>
           </div>
         )}
 
-        {!loading && share && (
-          <article>
-            <h1 className="text-2xl font-bold text-text-primary mb-4">
-              {share.type === 'query' ? share.question : share.title ?? 'Untitled'}
-            </h1>
+        {!loading && resource && (
+          <article className="shared-doc">
+            <div className="shared-eyebrow">
+              <span className="eyebrow">Shared with you</span>
+              <span className={`chip ${resource.may_comment ? 'chip-accent' : ''}`}>
+                {resource.may_comment ? 'you can suggest edits' : 'read only'}
+              </span>
+            </div>
 
-            {share.tags.length > 0 && (
-              <div className="flex flex-wrap gap-2 mb-5">
-                {share.tags.slice(0, 6).map((t) => (
-                  <span key={t} className="px-2 py-1 text-xs rounded border border-border text-text-secondary">
-                    {t}
+            <h1>{resource.title}</h1>
+
+            {resource.tags.length > 0 && (
+              <div className="shared-tags">
+                {resource.tags.slice(0, 8).map((tag) => (
+                  <span key={tag} className="chip">
+                    {tag}
                   </span>
                 ))}
               </div>
             )}
 
-            <div
-              className="prose-custom text-text-secondary leading-relaxed"
-              dangerouslySetInnerHTML={{ __html: sanitizedHtml }}
-            />
-
-            {share.type === 'query' && share.citations.length > 0 && (
-              <div className="mt-6 pt-4 border-t border-border">
-                <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-                  Sources
-                </h2>
-                <div className="space-y-1">
-                  {share.citations.map((citation) => (
+            {resource.kind === 'folder' ? (
+              <div className="shared-children">
+                {resource.children.length === 0 ? (
+                  <p className="shared-note">
+                    Nothing in here has been shared with you yet.
+                  </p>
+                ) : (
+                  resource.children.map((child) => (
                     <a
-                      key={citation.slug}
-                      href={`/wiki/${citation.slug}`}
-                      className="block text-sm text-accent hover:underline"
+                      key={child.urn}
+                      className="row-i shared-child"
+                      href={linkTo(child.urn)}
                     >
-                      {citation.title}
+                      <Icon name="file" />
+                      <span>
+                        <span className="t">{child.title}</span>
+                      </span>
                     </a>
-                  ))}
-                </div>
+                  ))
+                )}
+              </div>
+            ) : (
+              <div className="body" dangerouslySetInnerHTML={{ __html: html }} />
+            )}
+
+            {resource.citations.length > 0 && (
+              <div className="shared-sources">
+                <span className="eyebrow">Sources</span>
+                {resource.citations.map((citation, index) => (
+                  <div key={`${citation.title}-${index}`} className="shared-source">
+                    <span className="cite">{index + 1}</span>
+                    {citation.urn ? (
+                      <a href={linkTo(citation.urn)}>
+                        {citation.title}
+                      </a>
+                    ) : (
+                      // Cited but not shared: named, deliberately not linked.
+                      <span className="shared-source-locked">
+                        {citation.title}
+                        <Icon name="lock" size={11} />
+                      </span>
+                    )}
+                  </div>
+                ))}
               </div>
             )}
 
-            {share.expires_at && (
-              <div className="mt-8 text-xs text-muted-foreground">
-                This share link expires at {share.expires_at}.
+            {resource.may_comment && (
+              <div className="shared-comment">
+                {sent ? (
+                  <p className="shared-note">
+                    Sent. It is waiting for the owner to look at — nothing changed yet.
+                  </p>
+                ) : (
+                  <>
+                    <span className="eyebrow">Suggest a change</span>
+                    <textarea
+                      value={comment}
+                      placeholder="What should this say instead?"
+                      onChange={(event) => setComment(event.target.value)}
+                    />
+                    <div className="shared-comment-foot">
+                      <span>Goes to the owner's review queue, not the page.</span>
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-sm"
+                        disabled={!comment.trim() || sending}
+                        onClick={() => void submitComment()}
+                      >
+                        {sending ? 'Sending…' : 'Send'}
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
             )}
+
+            <div className="tracebar">
+              <Icon name="eye" size={13} />
+              You are seeing one part of someone's Archivum. Nothing else is reachable
+              from here.
+            </div>
           </article>
         )}
       </div>

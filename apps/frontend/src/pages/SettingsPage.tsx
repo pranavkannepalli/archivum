@@ -35,6 +35,8 @@ import { Button } from '../components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import { Badge } from '../components/ui/Badge';
 import { Input } from '../components/ui/Input';
+import VaultRepair from '../surfaces/VaultRepair';
+import CodeRepos from '../surfaces/CodeRepos';
 
 const PROVIDER_HELP: Record<string, string> = {
   anthropic: 'Direct Anthropic API calls. Best default when you have an API key configured.',
@@ -481,6 +483,22 @@ export default function SettingsPage() {
         </section>
 
         <section className="space-y-4">
+          <SettingsCard
+            icon={<Bot className="h-4 w-4" />}
+            title="Code memory"
+            description="Index a repository so your code, and the decisions behind it, live in the same graph as everything else."
+          >
+            <CodeRepos />
+          </SettingsCard>
+
+          <SettingsCard
+            icon={<RefreshCw className="h-4 w-4" />}
+            title="Vault repair"
+            description="Bring the indexes and your agents' memory back in line with what is on disk."
+          >
+            <VaultRepair />
+          </SettingsCard>
+
           <SettingsCard
             icon={<PlugZap className="h-4 w-4" />}
             title="Agent Access"

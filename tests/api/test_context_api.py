@@ -189,6 +189,11 @@ async def test_context_package_rejects_repo_scope_without_authorization(monkeypa
     build = AsyncMock(return_value=package)
     monkeypatch.setattr(context_api.sqlite, "get_db", fake_db)
     monkeypatch.setattr(context_api, "build_context_package", build)
+    # A repository is authorised by being in the register, so "unauthorised"
+    # means the register is empty rather than the scope string looking wrong.
+    monkeypatch.setattr(
+        context_api, "owned_repo_scopes", AsyncMock(return_value=set())
+    )
 
     with pytest.raises(HTTPException) as error:
         await context_api.context_package(

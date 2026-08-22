@@ -21,6 +21,7 @@ from qdrant_client.models import (
 )
 
 from archivum.config import Settings, get_settings
+from archivum.markdown_text import lede, strip_frontmatter
 
 logger = logging.getLogger(__name__)
 
@@ -364,6 +365,20 @@ async def init_collection(settings: Settings | None = None) -> None:
 
 # ── CRUD ──────────────────────────────────────────────────────────────────────
 
+def embeddable_text(title: str, markdown: str) -> str:
+    """What should actually be embedded for a page.
+
+    Frontmatter was being embedded along with the body, and every page opens
+    with the same handful of keys — so the strongest signal in the first chunk
+    was structure that all pages share, and unrelated queries still scored
+    around 0.5 against everything. The title goes in front instead: it is short,
+    it is what people type, and it was previously only searchable by accident.
+    """
+    body = strip_frontmatter(markdown).strip()
+    heading = (title or "").strip()
+    return f"{heading}\n\n{body}".strip() if heading else body
+
+
 async def upsert_page(
     slug: str,
     title: str,
@@ -384,7 +399,11 @@ async def upsert_page(
     # Delete stale vectors first
     await delete_page(slug, wiki_id, s)
 
-    chunks = _chunk_text(content)
+    chunks = _chunk_text(embeddable_text(title, content))
+    # Stored once, from the markdown while it still has line breaks. The chunker
+    # collapses whitespace, so an excerpt recovered from a chunk cannot tell a
+    # heading from a sentence.
+    excerpt = lede(content)
     vectors = await embed_texts(chunks, s)
     logger.debug("Qdrant vectors ready", extra={"slug": slug, "chunks": len(chunks), "dim": len(vectors[0]) if vectors else 0})
     if vectors and len(vectors[0]) != int(embed_dim):
@@ -403,6 +422,7 @@ async def upsert_page(
                 "chunk_index": i,
                 "wiki_id": wiki_id,
                 "text": chunk,
+                "excerpt": excerpt,
                 "knowledge_projection": projection,
             },
         )
@@ -479,7 +499,7 @@ async def search(
             seen[slug] = {
                 "slug": slug,
                 "title": payload.get("title", ""),
-                "excerpt": payload.get("text", "")[:300],
+                "excerpt": payload.get("excerpt") or payload.get("text", "")[:300],
                 "score": hit.score,
                 "chunk_index": payload.get("chunk_index", 0),
             }
@@ -514,7 +534,8 @@ async def search_raw(
         {
             "slug": (r.payload or {}).get("slug", ""),
             "title": (r.payload or {}).get("title", ""),
-            "excerpt": (r.payload or {}).get("text", ""),
+            "excerpt": (r.payload or {}).get("excerpt")
+            or (r.payload or {}).get("text", ""),
             "score": r.score,
             "chunk_index": (r.payload or {}).get("chunk_index", 0),
         }

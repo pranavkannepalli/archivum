@@ -20,6 +20,7 @@ from archivum.archgraph.extractors.base import _make_id
 from archivum.archgraph.ingest import IngestReport, ingest_repo
 from archivum.archgraph.mapper import knowledge_to_candidate_object, knowledge_to_candidate_relationship
 from archivum.archgraph.repo import snapshot_repo
+from archivum.config import get_settings
 from archivum.db import sqlite
 from archivum.knowledge.repository import KnowledgeRepository, init_knowledge_schema
 
@@ -172,7 +173,13 @@ def main(argv: list[str] | None = None) -> int:
 
     repo = args.repo_path.resolve()
     scope = args.scope if args.scope is not None else f"repo:{repo.name}"
-    cache_dir = args.cache_dir if args.cache_dir is not None else repo / ".archivum-cache"
+    # Default beside the deployment's other data rather than inside the working
+    # tree being read: indexing a repository should not dirty it.
+    cache_dir = (
+        args.cache_dir
+        if args.cache_dir is not None
+        else get_settings().code_cache_dir / repo.name
+    )
 
     try:
         if args.export_dir is not None:

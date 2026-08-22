@@ -422,6 +422,7 @@ class MemoryAssetRegistry:
         asset_type: str | None = None,
         layer: str | None = None,
         status: str | None = None,
+        owner: str | None = None,
         scope: str | None = None,
         page_slug: str | None = None,
         before_inclusive: str | None = None,
@@ -440,6 +441,12 @@ class MemoryAssetRegistry:
         if status is not None:
             clauses.append("status=?")
             params.append(status)
+        # Owner answers "whose memory is this?" and scope answers "which vault
+        # or repo does it belong to?". The profile page needs the former: every
+        # asset is owned by person:self but scoped to a wiki.
+        if owner is not None:
+            clauses.append("owner=?")
+            params.append(owner)
         if scope is not None:
             clauses.append("scope=?")
             params.append(scope)

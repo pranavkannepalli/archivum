@@ -228,3 +228,52 @@ async def test_rebuild_reports_only_successful_kuzu_writes(monkeypatch):
 
     assert report.kuzu_nodes == 0
     assert report.kuzu_edges == 0
+
+
+@pytest.mark.asyncio
+async def test_rebuild_projects_registered_repositories_too(tmp_path, monkeypatch, mock_kuzu_conn):
+    """Code has to reach the graph, or the graph view cannot show your work.
+
+    The rebuild filtered strictly on `wiki:{id}`, and code lives under
+    `repo:{name}`, so a repository could be fully indexed into canonical
+    knowledge and still never appear as a single node in the graph.
+    """
+    import archivum.db.sqlite as sqlite_mod
+    from archivum.config import Settings
+
+    monkeypatch.setattr("archivum.knowledge.projections.index_page", async_noop)
+    monkeypatch.setattr(
+        "archivum.knowledge.projections.clear_projection_index", async_noop
+    )
+    settings = Settings(db_path=tmp_path / "a.db", blob_dir=tmp_path / "b")
+    await sqlite_mod.init_db(settings)
+
+    async with sqlite_mod.get_db() as conn:
+        repo = KnowledgeRepository(conn)
+        await repo.upsert_object(
+            KnowledgeObject(
+                id="repo_atlas_geo_haversine",
+                kind="symbol",
+                label="haversine",
+                scope="repo:atlas",
+                confidence=1.0,
+                extraction_method="EXTRACTED",
+                citations=[
+                    Citation(
+                        source_id="x", chunk_id="geo.py",
+                        span_start=None, span_end=None, quote="L1-L2",
+                    )
+                ],
+                properties={"source_scope": "repo:atlas"},
+            )
+        )
+        await conn.execute(
+            "INSERT INTO code_repos (scope, wiki_id, name, path, status, created_at, updated_at)"
+            " VALUES ('repo:atlas','default','atlas','/tmp/atlas','ready','t','t')"
+        )
+        await conn.commit()
+
+        report = await rebuild_knowledge_projections(repo, wiki_id="default")
+
+    assert report.objects >= 1
+    assert report.kuzu_nodes >= 1

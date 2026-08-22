@@ -5,8 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import UTC, datetime
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -16,20 +14,13 @@ from archivum.config import Settings, get_settings
 from archivum.db import sqlite, qdrant_client as qdrant, graph
 from archivum.ingest.agent import slugify
 from archivum.knowledge.repository import KnowledgeRepository
-from archivum.knowledge.suggestions import init_suggestion_schema
 from archivum.indexing import (
     ensure_frontmatter,
     forget_page,
-    reconcile_vault,
     reindex_page,
     repoint_page,
 )
-from archivum.linting import WIKILINK_RE, normalize_wikilink_target
-from archivum.pages_to_knowledge import (
-    remove_page_from_knowledge,
-    rename_page_in_knowledge,
-    sync_page_to_knowledge,
-)
+from archivum.pages_to_knowledge import rename_page_in_knowledge
 from archivum.security.markdown import sanitize_markdown
 
 router = APIRouter(prefix="/api/pages", tags=["pages"])
@@ -201,40 +192,6 @@ async def _rewrite_wikilinks(
         )
 
 
-async def _sync_page_graph(
-    slug: str,
-    title: str,
-    content: str,
-    wiki_id: str,
-) -> None:
-    await graph.upsert_page(slug, title, wiki_id)
-    await graph.clear_references_from_page(slug, wiki_id)
-
-    linked_targets = {
-        normalize_wikilink_target(target)
-        for target in WIKILINK_RE.findall(content or "")
-        if target.strip()
-    }
-    for target_slug in sorted(linked_targets):
-        if not target_slug or target_slug == slug:
-            continue
-        existing = await sqlite.get_page(target_slug, wiki_id)
-        if existing:
-            await graph.add_reference(slug, target_slug, wiki_id)
-
-
-async def _sync_page_knowledge(slug: str, title: str, content: str, wiki_id: str) -> None:
-    async with sqlite.get_db() as conn:
-        await init_suggestion_schema(conn)
-        await sync_page_to_knowledge(
-            KnowledgeRepository(conn),
-            slug=slug,
-            title=title,
-            markdown=content,
-            wiki_id=wiki_id,
-        )
-
-
 async def _rename_page_knowledge(
     old_slug: str, new_slug: str, title: str, content: str, wiki_id: str
 ) -> None:
@@ -247,11 +204,6 @@ async def _rename_page_knowledge(
             markdown=content,
             wiki_id=wiki_id,
         )
-
-
-async def _remove_page_knowledge(slug: str, wiki_id: str) -> None:
-    async with sqlite.get_db() as conn:
-        await remove_page_from_knowledge(KnowledgeRepository(conn), slug=slug, wiki_id=wiki_id)
 
 
 async def move_page_to_slug(

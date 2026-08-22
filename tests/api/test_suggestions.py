@@ -36,6 +36,7 @@ async def _seed_suggestion(
     *,
     target_id: str,
     proposed_markdown: str = "## Suggested\n\n- [[Beta]]",
+    rationale: str = "",
 ):
     async with aiosqlite.connect(str(db_path)) as conn:
         conn.row_factory = aiosqlite.Row
@@ -47,6 +48,7 @@ async def _seed_suggestion(
             proposed_markdown=proposed_markdown,
             proposed_objects=[],
             citations=[],
+            rationale=rationale,
         )
 
 
@@ -260,6 +262,46 @@ def test_accepting_a_memory_suggestion_registers_active_memory_asset(tmp_path, m
     assert asset.status == "active"
     assert asset.body == "Remember the human-centered direction."
     assert asset.approved_by == "owner"
+
+
+def test_an_accepted_memory_summarises_itself_not_the_review_process(tmp_path, monkeypatch):
+    """The rationale says why it was queued, which is not what the memory says.
+
+    Distillation stamps every atom with the same sentence — "Above-threshold
+    extraction; promotion still requires review." — and that won over the
+    content. On a real vault six memories all described the review process and
+    none of them described themselves. The surface renders `summary || name`, so
+    the boilerplate was all you could see.
+    """
+    db_path = tmp_path / "suggestions.db"
+    _patch_suggestion_db(monkeypatch, db_path)
+    client = _client_for_wiki("alpha")
+    suggestion = asyncio.run(
+        _seed_suggestion(
+            db_path,
+            target_id="wiki:alpha",
+            proposed_markdown="Deploys go through compose, never update.sh.",
+            rationale="Above-threshold extraction; promotion still requires review.",
+        )
+    )
+
+    client.post(f"/api/suggestions/{suggestion.id}/review", json={"action": "accept"})
+
+    async def load_asset():
+        async with aiosqlite.connect(str(db_path)) as conn:
+            conn.row_factory = aiosqlite.Row
+            return await MemoryAssetRegistry(conn).get_asset(
+                f"memory:suggestion:{suggestion.id}"
+            )
+
+    asset = asyncio.run(load_asset())
+    assert asset is not None
+    assert "compose" in asset.summary, "the summary should say what is remembered"
+    assert "threshold" not in asset.summary
+    # The rationale is still worth keeping, just not as the thing you read first.
+    assert asset.metadata.get("rationale") == (
+        "Above-threshold extraction; promotion still requires review."
+    )
 
 
 def test_editing_a_memory_suggestion_registers_edited_memory_asset(tmp_path, monkeypatch):

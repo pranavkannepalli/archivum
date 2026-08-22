@@ -11,6 +11,8 @@ import WikiPage from './pages/WikiPage';
 import LoginPage from './pages/LoginPage';
 import NotFoundPage from './pages/NotFoundPage';
 import SharePage from './pages/SharePage';
+import SharedWithMePage from './pages/SharedWithMePage';
+import ClaimPage from './pages/ClaimPage';
 import PublicWikiPage from './pages/PublicWikiPage';
 import SettingsPage from './pages/SettingsPage';
 import IngestPanel from './components/IngestPanel';
@@ -136,6 +138,9 @@ function AppRoutes() {
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route path="/share/:token" element={<SharePage />} />
+      <Route path="/shared/view" element={<SharePage />} />
+      <Route path="/shared" element={<SharedWithMePage />} />
+      <Route path="/claim/:token" element={<ClaimPage />} />
       <Route path="/public" element={<PublicWikiPage />} />
       <Route path="/public/wiki/*" element={<PublicWikiPage />} />
       <Route path="/*" element={<ProtectedRoutes />} />

@@ -11,7 +11,8 @@ per row. It owns no storage and changes no memory semantics.
 
 from __future__ import annotations
 
-from typing import Literal
+from collections.abc import Iterable
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
@@ -120,6 +121,45 @@ def _parse_tags(raw: object) -> list[str]:
     return []
 
 
+def _cited_page_slug(citation: object, wiki_id: str) -> str | None:
+    """The page a citation points at, across both id shapes in use.
+
+    Suggestions written against a page use `page:<wiki>:<slug>`; the ones
+    distillation derives cite their source as `page:<slug>`. Both name a page and
+    both should light it up.
+    """
+    if not isinstance(citation, dict):
+        return None
+    source_id = citation.get("source_id")
+    if not isinstance(source_id, str) or not source_id.startswith("page:"):
+        return None
+    rest = source_id[len("page:") :]
+    prefix = f"{wiki_id}:"
+    return rest[len(prefix) :] if rest.startswith(prefix) else rest
+
+
+def _pages_awaiting_review(pending: Iterable[Any], wiki_id: str) -> set[str]:
+    """Slugs with a pending suggestion against them, or about them.
+
+    Only suggestions aimed straight at a page used to count. Distillation files
+    everything it proposes against `wiki:<id>` instead — a scope, not a page — so
+    none of the real pending work was attributable, and "Needs you" showed a
+    count it could not then list. What a wiki-scoped suggestion is about is
+    recorded in its citations, so read those too.
+    """
+    page_prefix = f"page:{wiki_id}:"
+    awaiting: set[str] = set()
+    for suggestion in pending:
+        if suggestion.target_id.startswith(page_prefix):
+            awaiting.add(suggestion.target_id[len(page_prefix) :])
+            continue
+        for citation in suggestion.citations:
+            slug = _cited_page_slug(citation, wiki_id)
+            if slug:
+                awaiting.add(slug)
+    return awaiting
+
+
 @router.get("/entries", response_model=EntryList)
 async def list_entries(
     kind: str | None = Query(default=None),
@@ -138,12 +178,7 @@ async def list_entries(
         )
     sources = await SourceStore().list_sources(wiki_id=wiki_id, limit=limit)
 
-    page_prefix = f"page:{wiki_id}:"
-    awaiting = {
-        s.target_id[len(page_prefix) :]
-        for s in pending
-        if s.target_id.startswith(page_prefix)
-    }
+    awaiting = _pages_awaiting_review(pending, wiki_id)
 
     entries: list[Entry] = []
     for row in pages:

@@ -12,6 +12,11 @@ from archivum.archgraph.extractors.base import (
 from archivum.archgraph.models import CodeEdge, CodeNode, Extraction, ExtractionMethod
 from archivum.archgraph.registry import LanguageConfig, config_for_suffix, load_parser
 
+# Enough to identify a symbol, not enough to paste a file into the graph. The
+# canonical answer is always the cited source; these are for recognition.
+_MAX_SIGNATURE = 300
+_MAX_SUMMARY = 200
+
 
 def extract_file(path: Path, *, root: Path | None = None, scope: str | None = None) -> Extraction:
     """Dispatch extraction by file suffix. Returns Extraction with error on unknown suffix."""
@@ -81,6 +86,87 @@ def _extract_generic(
             current = current.parent
         return None
 
+    def _emit_inheritance(node, type_id: str) -> None:  # type: ignore[no-untyped-def]
+        """Record what this type extends.
+
+        `inherits` was in the edge model from the start and never once emitted.
+        A type hierarchy is some of the strongest structure a codebase has, so
+        leaving it out cost the clustering its clearest signal — and cost anyone
+        reading the graph the answer to "what is this a kind of?".
+
+        Base names are emitted bare, exactly like call targets, and resolved by
+        the same pass; an unresolvable base (an imported third-party class) is
+        dropped rather than stored as a pointer to nothing.
+        """
+        # Python: `class Retry(Base)` -> argument_list. TS/JS: `class Retry
+        # extends Base` -> class_heritage. Both hold plain identifiers.
+        for child in node.children:
+            if child.type not in ("argument_list", "class_heritage"):
+                continue
+            for base in _identifier_names(child):
+                edges.append(
+                    CodeEdge(
+                        source=type_id,
+                        target=_make_id(base),
+                        relation="inherits",
+                        method=ExtractionMethod.EXTRACTED,
+                        source_file=str(path),
+                        source_location=_source_location(node),
+                    )
+                )
+
+    def _signature_of(node) -> str:  # type: ignore[no-untyped-def]
+        """The declaration line, without the body.
+
+        A name alone tells an agent almost nothing; the parameters and return
+        type are what let it decide whether a symbol is the one it wants without
+        opening the file.
+        """
+        body = node.child_by_field_name("body")
+        end = body.start_byte if body is not None else node.end_byte
+        text = source[node.start_byte:end].decode("utf-8", "replace")
+        # Collapse a wrapped signature onto one readable line.
+        signature = " ".join(text.split()).rstrip("{:").strip()
+        return signature[:_MAX_SIGNATURE] if signature else ""
+
+    def _summary_of(node) -> str:  # type: ignore[no-untyped-def]
+        """The first line of the docstring, if the author wrote one.
+
+        Only what is actually written: an absent docstring stays absent rather
+        than being replaced by a guess at what the code does.
+        """
+        body = node.child_by_field_name("body")
+        if body is None:
+            return ""
+        for child in body.children:
+            # Python: a bare string expression opening the body. TS/JS has no
+            # equivalent construct, so this correctly finds nothing there.
+            if child.type != "expression_statement":
+                continue
+            for grandchild in child.children:
+                if grandchild.type != "string":
+                    continue
+                raw = _read_text(grandchild, source)
+                text = raw.strip().strip('"\'').strip()
+                first = next((line.strip() for line in text.splitlines() if line.strip()), "")
+                return first[:_MAX_SUMMARY]
+            return ""
+        return ""
+
+    def _identifier_names(node) -> list[str]:  # type: ignore[no-untyped-def]
+        """Identifier text under a node, outermost first, deduplicated."""
+        found: list[str] = []
+        stack = list(node.children)
+        while stack:
+            current = stack.pop(0)
+            if current.type in ("identifier", "type_identifier"):
+                text = _read_text(current, source)
+                if text and text not in found:
+                    found.append(text)
+                continue
+            stack.extend(current.children)
+        return found
+
     def _walk(node) -> None:  # type: ignore[no-untyped-def]
         if node.type in cfg.class_types:
             name_node = node.child_by_field_name("name")
@@ -93,8 +179,13 @@ def _extract_generic(
                         kind="type",
                         source_file=str(path),
                         source_location=_source_location(node),
+                        properties={
+                            "signature": _signature_of(node),
+                            "summary": _summary_of(node),
+                        },
                     )
                 )
+                _emit_inheritance(node, _make_id(file_namespace, name))
 
         elif node.type in cfg.function_types:
             name_node = node.child_by_field_name("name")
@@ -112,6 +203,10 @@ def _extract_generic(
                         kind="symbol",
                         source_file=str(path),
                         source_location=_source_location(node),
+                        properties={
+                            "signature": _signature_of(node),
+                            "summary": _summary_of(node),
+                        },
                     )
                 )
 
@@ -320,5 +415,23 @@ def _extract_generic(
         _walk(tree_root)
     except Exception as exc:
         return Extraction(nodes=[], edges=[], error=str(exc))
+
+    # Containment. Without it a file node has no edges at all, and the symbols
+    # it declares are joined only by whatever calls happen to run between them —
+    # so a module with no internal calls shatters into isolated records and
+    # nothing can cluster by the structure a person actually navigates.
+    for node in list(nodes):
+        if node.id == file_id or node.kind not in ("symbol", "type"):
+            continue
+        edges.append(
+            CodeEdge(
+                source=file_id,
+                target=node.id,
+                relation="defines",
+                method=ExtractionMethod.EXTRACTED,
+                source_file=str(path),
+                source_location=node.source_location,
+            )
+        )
 
     return Extraction(nodes=nodes, edges=edges)

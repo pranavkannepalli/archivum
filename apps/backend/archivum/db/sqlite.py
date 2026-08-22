@@ -13,6 +13,8 @@ import aiosqlite
 from archivum.config import Settings, get_settings
 from archivum.knowledge.suggestions import init_suggestion_schema
 from archivum.memory.registry import init_memory_schema
+from archivum.sharing.migration import migrate_share_links
+from archivum.sharing.repository import init_sharing_schema
 from archivum.store.schema import init_evidence_schema
 
 # ── Schema ────────────────────────────────────────────────────────────────────
@@ -170,6 +172,25 @@ CREATE TABLE IF NOT EXISTS invite_tokens (
     used       INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS code_repos (
+    scope        TEXT PRIMARY KEY,
+    wiki_id      TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    path         TEXT NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'pending',
+    last_sha     TEXT,
+    files        INTEGER NOT NULL DEFAULT 0,
+    nodes        INTEGER NOT NULL DEFAULT 0,
+    edges        INTEGER NOT NULL DEFAULT 0,
+    pages        INTEGER NOT NULL DEFAULT 0,
+    error        TEXT,
+    indexed_at   TEXT,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_code_repos_wiki ON code_repos(wiki_id);
+
 CREATE TABLE IF NOT EXISTS agent_activity (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     wiki_id     TEXT NOT NULL DEFAULT 'default',
@@ -201,9 +222,17 @@ def configure(settings: Settings) -> None:
 async def get_db() -> AsyncGenerator[aiosqlite.Connection, None]:
     settings = get_settings()
     path = _db_path or settings.db_path
-    async with aiosqlite.connect(str(path)) as conn:
+    async with aiosqlite.connect(
+        str(path), timeout=settings.sqlite_busy_timeout_seconds
+    ) as conn:
         conn.row_factory = aiosqlite.Row
         await conn.execute("PRAGMA foreign_keys=ON")
+        # Set explicitly as well as via the driver: waiting is the behaviour
+        # this depends on, and it should not rest on a default that a driver
+        # upgrade could change.
+        await conn.execute(
+            f"PRAGMA busy_timeout={int(settings.sqlite_busy_timeout_seconds * 1000)}"
+        )
         yield conn
 
 
@@ -221,6 +250,10 @@ async def init_db(settings: Settings) -> None:
         # would otherwise run without them and fail at query time.
         await init_memory_schema(db)
         await init_suggestion_schema(db)
+        await init_sharing_schema(db)
+        # Legacy share links become grants so a URL handed out before this
+        # existed keeps resolving. Idempotent, so it is safe on every boot.
+        await migrate_share_links(db)
         await db.commit()
 
 
@@ -549,27 +582,15 @@ async def update_share_targets(mapping: dict[str, str], wiki_id: str = "default"
 
 # ── Folders ───────────────────────────────────────────────────────────────────
 
-DEFAULT_ORGANIZATION_FOLDERS = [
-    "inbox",
-    "notes",
-    "sources",
-    "daily",
-    "projects",
-    "areas",
-    "people",
-    "archive",
-]
-
-
 async def list_folders(wiki_id: str = "default") -> list[dict[str, Any]]:
-    now = datetime.now(UTC).isoformat()
+    """The folders in this vault.
+
+    Reading used to create the default folders as a side effect, which meant a
+    folder you deleted reappeared the next time anything listed them — you
+    could not actually remove one. Seeding now happens once at startup, in
+    `vault_scaffold`.
+    """
     async with get_db() as db:
-        for path in DEFAULT_ORGANIZATION_FOLDERS:
-            await db.execute(
-                "INSERT OR IGNORE INTO folders (wiki_id, path, name, created_at, updated_at) VALUES (?,?,?,?,?)",
-                (wiki_id, path, path.split("/")[-1], now, now),
-            )
-        await db.commit()
         async with db.execute(
             "SELECT path, name, created_at, updated_at FROM folders WHERE wiki_id=? ORDER BY path ASC",
             (wiki_id,),

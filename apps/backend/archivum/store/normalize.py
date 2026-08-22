@@ -42,9 +42,16 @@ class NormalizedDoc:
     metadata: dict[str, Any]
 
 
+def mime_for_doc_type(doc_type: str) -> str:
+    """The mime a parser's `type` metadata stands for, defaulting to plain text."""
+    return _TYPE_TO_MIME.get(doc_type.lower(), "text/plain")
+
+
 async def normalize(origin_uri: str) -> NormalizedDoc:
     """Parse `origin_uri` into normalized text and a mime type."""
     parsed = await parse_source(origin_uri)
-    doc_type = str(parsed.metadata.get("type", "")).lower()
-    mime = _TYPE_TO_MIME.get(doc_type, "text/plain")
-    return NormalizedDoc(text=parsed.text, mime=mime, metadata=dict(parsed.metadata))
+    return NormalizedDoc(
+        text=parsed.text,
+        mime=mime_for_doc_type(str(parsed.metadata.get("type", ""))),
+        metadata=dict(parsed.metadata),
+    )

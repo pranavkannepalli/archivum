@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import logging
 import json
 import os
 import platform
@@ -20,6 +21,7 @@ from archivum.config import Settings, get_settings
 from archivum.db import graph, qdrant_client as qdrant, sqlite
 from archivum.ingest.agent import slugify
 from archivum.indexing import reconcile_vault
+from archivum.knowledge.backfill import link_entities_to_their_pages
 from archivum.knowledge.projections import rebuild_knowledge_projections
 from archivum.knowledge.repository import KnowledgeRepository, init_knowledge_schema
 from archivum.knowledge.personal_root import SELF_SCOPE
@@ -33,6 +35,8 @@ from archivum.llm.cli_client import (
     start_codex_device_login,
 )
 from archivum.pages_to_knowledge import sync_page_to_knowledge
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["system"])
 
@@ -548,6 +552,17 @@ async def reindex_vault(
     results = await reconcile_vault(
         wiki_id=current_user.wiki_id, settings=settings, force=force
     )
+    # Re-reading pages cannot recreate links that ingest makes, so the repair
+    # path rebuilds them from provenance rather than leaving a graph that was
+    # written before the link existed permanently disconnected.
+    rejoined = 0
+    try:
+        async with sqlite.get_db() as conn:
+            rejoined = await link_entities_to_their_pages(
+                KnowledgeRepository(conn), wiki_id=current_user.wiki_id
+            )
+    except Exception as exc:  # noqa: BLE001 - a reindex that indexed is still a win
+        logger.warning("Could not rejoin entities to their pages: %s", exc)
     counts: dict[str, int] = {}
     degraded: set[str] = set()
     for result in results:
@@ -557,6 +572,7 @@ async def reindex_vault(
         "pages": len(results),
         "actions": counts,
         "degraded": sorted(degraded),
+        "entities_rejoined": rejoined,
     }
 
 

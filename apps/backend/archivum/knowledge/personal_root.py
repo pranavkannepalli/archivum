@@ -20,6 +20,8 @@ PERSONAL_RELATIONSHIP_TYPES = frozenset(
         "saved_source",
         "asked_question",
         "uses_code",
+        # Work the owner did: a captured session, joined to what it changed.
+        "did_work",
         # Governed memory assets.
         "owns_asset",
         "remembers",

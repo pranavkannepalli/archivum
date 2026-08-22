@@ -64,6 +64,9 @@ HTTP/SSE:
 | `retrieve_memory(query, wiki_id, limit)` | Compact hybrid evidence with citations |
 | `distill_source(source_id, wiki_id, scenario_key)` | Promote a captured session into cited atoms, scenario, persona, and skill memory |
 | `catalog_memory_assets(wiki_id)` | Register existing pages, sources, and code graphs as governed assets |
+| `index_repository(path, name, wiki_id)` | Read a repository into code memory: graph, governed asset, and vault pages |
+| `list_repositories(wiki_id)` | The repositories this vault has indexed, and how fresh each one is |
+| `retrieve_code_context(query, repo, depth, max_nodes, wiki_id)` | Cited code context scoped to one indexed repository |
 | `list_memory_assets(asset_type, status, wiki_id, limit)` | List governed memory assets |
 | `load_agent_memory(agent_key, query, wiki_id, limit)` | Return only the memory assets this agent is equipped with, cited |
 | `graph_audit_report(wiki_id, surprise_limit)` | Clusters, provenance breakdown, gaps, and surprising links |

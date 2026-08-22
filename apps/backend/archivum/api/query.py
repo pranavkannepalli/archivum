@@ -21,6 +21,7 @@ from archivum.llm.openai_compat_client import (
     openai_compat_stream_tokens,
 )
 from archivum.llm.cli_client import cli_chat_completion
+from archivum.llm.prompt_context import with_context
 from archivum.retrieval.hybrid import hybrid_retrieve
 from archivum.retrieval.context import ContextRequest, build_context_package
 
@@ -39,6 +40,12 @@ class QueryRequest(BaseModel):
 
 
 def _build_prompt(question: str, contexts: list[dict[str, Any]]) -> str:
+    """The question, its evidence, and the date it is being asked on.
+
+    Without the date a model resolves "recently" and "currently" against its
+    training cutoff, which for a vault whose job is remembering *when* you
+    thought something quietly produces wrong answers that read as right.
+    """
     ctx_lines: list[str] = []
     for i, c in enumerate(contexts[:_MAX_CONTEXTS], start=1):
         slug = c.get("slug", "")
@@ -50,7 +57,7 @@ def _build_prompt(question: str, contexts: list[dict[str, Any]]) -> str:
 
     ctx_block = "\n\n".join(ctx_lines) if ctx_lines else "(No relevant context found.)"
 
-    return (
+    return with_context(
         "You are Archivum, a knowledge base assistant. Answer using ONLY the provided context. "
         "Cite every factual claim with its bracketed context number. "
         "If the context is insufficient, explicitly say so.\n\n"

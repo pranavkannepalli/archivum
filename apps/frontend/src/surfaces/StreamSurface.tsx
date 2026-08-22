@@ -4,12 +4,15 @@ import {
   getActivity,
   reviewSuggestion,
   type ActivityItem,
+  toggleTask,
   type MemorySuggestion,
+  type OpenTask,
   type SuggestionReviewAction,
 } from '../api';
 import { useToast } from '../components/ui/Toast';
 import { Icon } from '../shell/Icon';
 import StreamComposer from './StreamComposer';
+import ShareHolds from './ShareHolds';
 import { cn } from '../lib/cn';
 
 /**
@@ -50,6 +53,8 @@ const KIND_ICON: Record<ActivityItem['kind'], string> = {
   suggestion: 'bot',
   ingest: 'database',
   memory: 'layers',
+  session: 'bot',
+  fix: 'check',
 };
 
 function verbFor(item: ActivityItem): string {
@@ -66,6 +71,16 @@ function verbFor(item: ActivityItem): string {
       return 'You brought in';
     case 'memory':
       return 'Archivum remembered';
+    case 'session': {
+      const kind = String(item.payload.session_kind ?? 'work');
+      if (kind === 'bugfix') return 'An agent fixed';
+      if (kind === 'feature') return 'An agent built';
+      if (kind === 'refactor') return 'An agent tidied';
+      if (kind === 'investigation') return 'An agent looked into';
+      return 'An agent worked on';
+    }
+    case 'fix':
+      return 'Now known: this breaks when';
     default:
       return '';
   }
@@ -75,6 +90,7 @@ export default function StreamSurface() {
   const [items, setItems] = useState<ActivityItem[]>([]);
   const [nextBefore, setNextBefore] = useState<string | null>(null);
   const [pending, setPending] = useState(0);
+  const [tasks, setTasks] = useState<OpenTask[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -87,6 +103,9 @@ export default function StreamSurface() {
       setItems((prev) => (before ? [...prev, ...feed.items] : feed.items));
       setNextBefore(feed.next_before);
       setPending(feed.pending_review);
+      // Only the first page carries them: outstanding work is a standing list,
+      // not part of the timeline.
+      if (!before) setTasks(feed.open_tasks ?? []);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load your stream');
@@ -98,6 +117,22 @@ export default function StreamSurface() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  async function tick(task: OpenTask) {
+    // Optimistic: the line is already written, and a checkbox that waits on a
+    // round-trip feels broken even when it is working.
+    setTasks((prev) => prev.filter((entry) => entry.slug !== task.slug || entry.line !== task.line));
+    try {
+      await toggleTask({ slug: task.slug, line: task.line, done: true });
+    } catch (error) {
+      setTasks((prev) => [...prev, task]);
+      push({
+        kind: 'error',
+        title: "Couldn't tick that off",
+        description: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
 
   async function review(item: ActivityItem, action: SuggestionReviewAction) {
     const suggestionId = item.payload.suggestion_id as string | undefined;
@@ -152,6 +187,8 @@ export default function StreamSurface() {
       <div className="col">
         <StreamComposer onCaptured={() => void load()} />
 
+        <ShareHolds />
+
         {pending > 0 && (
           <div className="needs">
             <span className="ic">
@@ -172,6 +209,34 @@ export default function StreamSurface() {
             >
               Review them
             </button>
+          </div>
+        )}
+
+        {tasks.length > 0 && (
+          <div className="tasks">
+            <div className="daybar">
+              Still open · {tasks.length}
+            </div>
+            {tasks.map((task) => (
+              <div className="task" key={`${task.slug}:${task.line}`}>
+                <button
+                  type="button"
+                  className="task-box"
+                  aria-label={`Mark "${task.text}" done`}
+                  onClick={() => void tick(task)}
+                />
+                <span className="task-text">{task.text}</span>
+                <button
+                  type="button"
+                  className="where"
+                  style={{ marginLeft: 'auto' }}
+                  onClick={() => navigate(`/wiki/${task.slug}`)}
+                >
+                  <Icon name="file" size={11} />
+                  {task.page_title}
+                </button>
+              </div>
+            ))}
           </div>
         )}
 
@@ -274,6 +339,33 @@ export default function StreamSurface() {
                         {item.payload.status === 'error' && (
                           <span className="chip chip-bad">failed</span>
                         )}
+                      </div>
+                    )}
+
+                    {item.kind === 'fix' && (
+                      <div className="tags">
+                        {item.payload.verified_by ? (
+                          <span className="chip chip-ok">
+                            verified by {String(item.payload.verified_by)}
+                          </span>
+                        ) : (
+                          // Say it plainly. A fix nobody checked is still worth
+                          // keeping; presenting it as proven would not be.
+                          <span className="chip">not verified by a check</span>
+                        )}
+                        {(item.payload.changed_paths as string[] | undefined)
+                          ?.slice(0, 3)
+                          .map((path) => (
+                            <span className="chip" key={path}>
+                              {path.split('/').pop()}
+                            </span>
+                          ))}
+                      </div>
+                    )}
+
+                    {item.kind === 'session' && (
+                      <div className="tags">
+                        <span className="chip">{String(item.payload.session_kind ?? 'work')}</span>
                       </div>
                     )}
 

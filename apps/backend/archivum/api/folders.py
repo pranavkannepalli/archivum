@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from archivum.auth import CurrentUser, get_current_user, require_writer
 from archivum.config import Settings, get_settings
-from archivum.indexing import reindex_page, repoint_page
+from archivum.indexing import forget_page, reindex_page, repoint_page
 from archivum.db import graph, qdrant_client as qdrant, sqlite
 from archivum.security.markdown import sanitize_markdown
 
@@ -216,15 +216,20 @@ async def delete_folder_tree(
             detail={"detail": "Folder is not empty", "code": "folder_not_empty"},
         )
 
+    # Delete each page the same way deleting it on its own would. This used to
+    # drop the file, the embedding and the graph node by hand and then bulk-
+    # delete the rows, which skipped canonical knowledge, memory assets and the
+    # review queue — and because the row was already gone, neither the vault
+    # watcher nor the reconcile pass could ever repair the leftovers.
     for page in pages:
         slug = page["slug"]
         (settings.wiki_dir / f"{slug}.md").unlink(missing_ok=True)
-        await qdrant.delete_page(slug, wiki_id, settings)
-        await graph.delete_page_node(slug)
+        await forget_page(slug, wiki_id=wiki_id, settings=settings)
 
+    # Any row still under the path had no file to forget; drop it so an empty
+    # folder cannot leave a page behind.
     await sqlite.delete_pages_under(path, wiki_id)
     folder_count = await sqlite.delete_folders_under(path, wiki_id)
-    await graph.cleanup_abandoned_nodes(wiki_id)
     return {"path": path, "pages": len(pages), "folders": folder_count}
 
 

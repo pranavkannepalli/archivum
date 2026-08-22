@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from archivum.archgraph.models import CodeEdge, CodeNode, Extraction
 from archivum.knowledge.models import Citation, KnowledgeObject, KnowledgeRelationship
@@ -27,6 +27,7 @@ class CandidateEntity:
     confidence: float
     extraction_method: str
     provenance: list[Provenance]
+    properties: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,7 @@ class CandidateArtifact:
     confidence: float
     extraction_method: str
     provenance: list[Provenance]
+    properties: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -102,7 +104,7 @@ def candidate_to_knowledge_object(
         confidence=candidate.confidence,
         extraction_method=candidate.extraction_method,
         citations=_citations(candidate.provenance),
-        properties={"source_scope": candidate.scope},
+        properties={"source_scope": candidate.scope, **getattr(candidate, "properties", {})},
     )
 
 
@@ -191,6 +193,7 @@ def map_extraction(
                     confidence=1.0,
                     extraction_method="EXTRACTED",
                     provenance=prov,
+                    properties=dict(node.properties),
                 )
             )
         else:
@@ -203,6 +206,7 @@ def map_extraction(
                     confidence=1.0,
                     extraction_method="EXTRACTED",
                     provenance=prov,
+                    properties=dict(node.properties),
                 )
             )
 

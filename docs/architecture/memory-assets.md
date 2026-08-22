@@ -27,8 +27,8 @@ Every layer above L0 is addressable as a memory asset. An asset shares its id wi
 |---|---|
 | `asset_type` | `wiki`, `chat`, `skill`, `codegraph`, `source`, `scenario`, `persona` |
 | `layer` | `L0`–`L3` |
-| `owner` | `person:self` by default |
-| `scope` | The wiki or repository the asset belongs to |
+| `owner` | Whose memory this is — `person:self` for everything the owner owns |
+| `scope` | Which vault or repository it belongs to, e.g. `wiki:default` |
 | `status` | `draft`, `active`, `archived` |
 | `visibility` | `private`, `shared`, `public` |
 | `version` | Bumped only when content changes |
@@ -36,6 +36,14 @@ Every layer above L0 is addressable as a memory asset. An asset shares its id wi
 | `citations` | Evidence the asset rests on |
 
 Status and visibility are governance state, not content: changing them does not create a version, and editing content does not silently reactivate an archived asset. Every content change is snapshotted in `memory_asset_versions`.
+
+`owner` and `scope` answer different questions and are not interchangeable. Every asset is owned by `person:self` and scoped to the wiki it lives in, so "what are my agents told about me?" is an `owner` query — `GET /api/memory/assets?owner=person:self`, which is what the profile page uses. Filtering assets on `scope=person:self` matches nothing.
+
+## Governance Travels With the Write
+
+A page becomes a governed asset when it is indexed, and an ingested source becomes one when its bytes are stored. Both go through the same registration used by the catalog pass (`register_page_asset` / `register_source_asset` in `memory/catalog.py`), so ingest and catalog cannot describe the same object under two ids or two kinds.
+
+That makes cataloguing a repair path rather than a routine one, in the same way `reconcile_vault` is the repair path for indexing. It is still needed to backfill a vault written before this held, and to register code graphs. **Settings → Vault repair** runs the whole catch-up: a forced vault reindex followed by a catalog pass. Running it on an up-to-date vault is a no-op.
 
 ## Cataloguing Existing Memory
 
@@ -81,13 +89,15 @@ An agent profile is bound to specific assets:
 - `always` bindings are handed over unconditionally,
 - `on_demand` bindings are handed over when the session query matches the asset's text.
 
-Only `active` assets in the caller's wiki are ever returned. `GET /api/memory/agents/{key}/loadout` and the `load_agent_memory` MCP tool return the bound assets with their citations, plus an explicit reason whenever the loadout is empty or uncited. This is what lets the next agent inherit the last agent's experience without loading the whole store into context.
+Only `active` assets in the caller's wiki are ever returned. An agent with no profile is not turned away empty-handed: it receives the vault's `active` assets, on demand, with a reason saying no profile was set. Active is the same bar a bound asset must clear — a draft is a proposal, and an agent is handed decisions rather than proposals. Without this a fresh vault answered every loadout with nothing, because no screen creates profiles.
+
+`GET /api/memory/agents/{key}/loadout` and the `load_agent_memory` MCP tool return the bound assets with their citations, plus an explicit reason whenever the loadout is empty or uncited. This is what lets the next agent inherit the last agent's experience without loading the whole store into context.
 
 ## REST
 
 | Route | Purpose |
 |---|---|
-| `GET/POST /api/memory/assets` | List and register assets |
+| `GET/POST /api/memory/assets` | List and register assets; `GET` filters on `asset_type`, `layer`, `status`, `owner`, `scope`, `page_slug` |
 | `GET /api/memory/assets/{id}` | Fetch one asset |
 | `GET /api/memory/assets/{id}/versions` | Version history |
 | `POST /api/memory/assets/{id}/status` | `draft` / `active` / `archived` |

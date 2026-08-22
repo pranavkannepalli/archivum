@@ -96,7 +96,20 @@ Editors and web clients over HTTP/SSE:
 }
 ```
 
-MCP tools exposed to agents: `ingest_source`, `search_wiki`, `list_pages`, `get_page`, `write_page`, `query`, `graph_neighbors`, `lint_wiki`, and `dispatch_command` (a text wrapper over the above).
+MCP tools exposed to agents, by what you want:
+
+| Want | Tools |
+|---|---|
+| Read the vault | `search_wiki`, `list_pages`, `get_page`, `query`, `retrieve_memory` |
+| Write to it | `write_page`, `ingest_source`, `capture_conversation`, `record_work` |
+| Understand code | `index_repository`, `list_repositories`, `retrieve_code_context`, `recall_fix` |
+| Walk the graph | `graph_neighbors`, `graph_shortest_path`, `graph_audit_report`, `build_context_package` |
+| Govern memory | `list_memory_assets`, `catalog_memory_assets`, `load_agent_memory`, `distill_source` |
+| Housekeeping | `lint_wiki`, `export_graph_demo`, `life_daily_note`, `life_register_project`, `dispatch_command` |
+
+For agents that support skills, `skills/archivum-memory/SKILL.md` encodes the
+loop worth following: check `recall_fix` before debugging, load code context
+before changing unfamiliar code, and `record_work` when something mattered.
 
 ## How it works
 

@@ -56,13 +56,13 @@ async def resolve_loadout(
     """
     agent = await registry.get_agent(agent_key, wiki_id)
     if agent is None:
-        return LoadoutPackage(
-            agent_key=agent_key,
-            query=query,
-            entries=[],
-            citations=[],
-            insufficient_evidence=True,
-            reason=f"No agent profile named '{agent_key}'.",
+        # A fresh vault has no profiles and no screen that makes one, so an
+        # agent asking what it should know used to get an empty package and an
+        # explanation. Active assets are already the owner's explicit decisions
+        # about what may be handed out, which makes them the honest default
+        # until a profile says something more specific.
+        return await _default_loadout(
+            registry, agent_key=agent_key, wiki_id=wiki_id, query=query, limit=limit
         )
 
     bindings = await registry.list_bindings(agent_key=agent_key, wiki_id=wiki_id)
@@ -142,3 +142,43 @@ def _dedupe(citations: list[Citation]) -> list[Citation]:
         seen.add(key)
         unique.append(citation)
     return unique
+
+
+async def _default_loadout(
+    registry: MemoryAssetRegistry,
+    *,
+    agent_key: str,
+    wiki_id: str,
+    query: str,
+    limit: int,
+) -> LoadoutPackage:
+    """What an unconfigured agent gets: the owner's activated memory.
+
+    Deliberately the same bar as a bound asset — `active` only. A draft is a
+    proposal, and an agent is handed decisions rather than proposals.
+    """
+    assets = await registry.list_assets(wiki_id=wiki_id, status="active", limit=limit)
+    entries = [
+        LoadoutEntry(
+            asset=asset,
+            mode="on_demand",
+            # Equal footing: without a profile there is no stated preference
+            # between one activated asset and another.
+            priority=0,
+            reason="Active memory (no profile set).",
+        )
+        for asset in assets
+    ]
+    citations = [citation for entry in entries for citation in entry.asset.citations]
+    return LoadoutPackage(
+        agent_key=agent_key,
+        query=query,
+        entries=entries,
+        citations=citations,
+        insufficient_evidence=not entries,
+        reason=(
+            f"No profile named '{agent_key}'; handed the vault's active memory by default."
+            if entries
+            else f"No profile named '{agent_key}', and no memory has been activated yet."
+        ),
+    )

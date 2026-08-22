@@ -1,5 +1,6 @@
 from unittest.mock import AsyncMock, patch
 
+import pytest
 import pytest_asyncio
 from fastapi.testclient import TestClient
 
@@ -11,7 +12,12 @@ from archivum.main import create_app
 
 @pytest_asyncio.fixture
 async def env(tmp_path):
-    settings = Settings(db_path=tmp_path / "archivum.db", blob_dir=tmp_path / "blobs")
+    settings = Settings(
+        db_path=tmp_path / "archivum.db",
+        blob_dir=tmp_path / "blobs",
+        wiki_dir=tmp_path / "wiki",
+    )
+    settings.wiki_dir.mkdir(parents=True, exist_ok=True)
     await sqlite_mod.init_db(settings)
 
     with (
@@ -256,3 +262,131 @@ async def test_activity_handles_prefix_related_memory_ids(env):
             f"{asset_id} was dropped by the cursor"
         )
     assert len(seen) == len(set(seen))
+
+
+# ── The work you actually did should show up where you look ───────────────
+
+
+@pytest.mark.asyncio
+async def test_a_captured_session_appears_in_the_stream(env):
+    """Automatic capture you cannot see is hard to tell apart from no capture."""
+    from archivum.knowledge.models import Citation, KnowledgeObject
+    from archivum.knowledge.repository import KnowledgeRepository
+
+    client = env
+    async with sqlite_mod.get_db() as conn:
+        await KnowledgeRepository(conn).upsert_object(
+            KnowledgeObject(
+                id="session:src-1",
+                kind="session",
+                label="Fix the crash in haversine",
+                scope="wiki:default",
+                confidence=1.0,
+                extraction_method="EXTRACTED",
+                citations=[
+                    Citation(source_id="src-1", chunk_id="src-1", span_start=None, span_end=None, quote="x")
+                ],
+                properties={
+                    "kind": "bugfix",
+                    "started_at": "2026-08-20T10:00:00Z",
+                    "touched_paths": ["/src/geo.py"],
+                },
+            )
+        )
+        await conn.commit()
+
+    body = client.get("/api/activity").json()
+    sessions = [item for item in body["items"] if item["kind"] == "session"]
+
+    assert sessions, body
+    assert sessions[0]["payload"]["session_kind"] == "bugfix"
+    assert sessions[0]["actor"] == "agent"
+
+
+@pytest.mark.asyncio
+async def test_a_remembered_fix_appears_in_the_stream(env):
+    from archivum.knowledge.models import Citation, KnowledgeObject
+    from archivum.knowledge.repository import KnowledgeRepository
+
+    client = env
+    async with sqlite_mod.get_db() as conn:
+        await KnowledgeRepository(conn).upsert_object(
+            KnowledgeObject(
+                id="fix:src-1",
+                kind="fix",
+                label="TypeError: bad operand",
+                scope="wiki:default",
+                confidence=0.9,
+                extraction_method="EXTRACTED",
+                citations=[
+                    Citation(source_id="src-1", chunk_id="src-1", span_start=None, span_end=None, quote="x")
+                ],
+                properties={
+                    "symptom": "TypeError: bad operand",
+                    "diagnosis": "normalise returned a string.",
+                    "verified_by": "pytest",
+                    "started_at": "2026-08-20T11:00:00Z",
+                },
+            )
+        )
+        await conn.commit()
+
+    body = client.get("/api/activity").json()
+    fixes = [item for item in body["items"] if item["kind"] == "fix"]
+
+    assert fixes, body
+    assert fixes[0]["summary"] == "normalise returned a string."
+    assert fixes[0]["payload"]["verified_by"] == "pytest"
+
+
+@pytest.mark.asyncio
+async def test_open_tasks_ride_along_with_the_feed(env):
+    """The stream is where you would look for what still needs doing."""
+    client = env
+    await sqlite_mod.upsert_page(
+        "daily/today", "Today", "- [ ] Ship it\n- [x] Done\n", [], "user", "default"
+    )
+
+    body = client.get("/api/activity").json()
+
+    assert [task["text"] for task in body["open_tasks"]] == ["Ship it"]
+    assert body["open_tasks"][0]["slug"] == "daily/today"
+
+
+@pytest.mark.asyncio
+async def test_ticking_a_task_edits_the_page_it_lives_in(env, tmp_path):
+    """The file is the source of truth, so ticking a box changes the file."""
+    client = env
+    settings = client.app.dependency_overrides[get_settings]()
+    path = settings.wiki_dir / "daily" / "today.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("- [ ] Ship it\n", encoding="utf-8")
+    await sqlite_mod.upsert_page(
+        "daily/today", "Today", path.read_text(encoding="utf-8"), [], "user", "default"
+    )
+
+    with (
+        patch("archivum.indexing.qdrant.upsert_page", new=AsyncMock()),
+        patch("archivum.indexing.graph.upsert_page", new=AsyncMock()),
+        patch("archivum.indexing.graph.clear_references_from_page", new=AsyncMock()),
+        patch("archivum.indexing.graph.add_reference", new=AsyncMock()),
+    ):
+        response = client.post(
+            "/api/tasks/toggle", json={"slug": "daily/today", "line": 1, "done": True}
+        )
+
+    assert response.status_code == 200
+    assert "- [x] Ship it" in path.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_ticking_something_that_is_not_a_task_is_refused(env):
+    client = env
+    settings = client.app.dependency_overrides[get_settings]()
+    (settings.wiki_dir / "a.md").write_text("Just prose.\n", encoding="utf-8")
+    await sqlite_mod.upsert_page("a", "A", "Just prose.\n", [], "user", "default")
+
+    response = client.post("/api/tasks/toggle", json={"slug": "a", "line": 1, "done": True})
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "not_a_task"

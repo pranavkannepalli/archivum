@@ -1,10 +1,18 @@
-"""Ingest pipeline: orchestrates parser → agent → qdrant → kuzu → sqlite."""
+"""Ingest pipeline: parse → keep the evidence → extract → pages → projections.
+
+The evidence step is what makes the rest trustworthy. Ingest and the L0 source
+store used to be separate paths that never met, so a page derived from a
+dropped file cited a provenance id that had been made up on the spot and no
+bytes were kept. Now the raw bytes are stored first, under the name the user
+brought in, and every record below cites a chunk of that stored source.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, AsyncGenerator, Callable, Awaitable
 
@@ -20,6 +28,11 @@ from archivum.linting import normalize_wikilink_target
 from archivum.observability import new_trace_id, set_trace_id, span
 from archivum.indexing import ensure_frontmatter, reindex_page
 from archivum.pages_to_knowledge import sync_page_to_knowledge
+from archivum.memory.catalog import register_source_asset
+from archivum.memory.registry import MemoryAssetRegistry
+from archivum.store.ingest import ingest_source as store_ingest_source
+from archivum.store.ingest import read_origin_bytes
+from archivum.store.normalize import NormalizedDoc, mime_for_doc_type
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +158,26 @@ async def ingest(
         )
         await emit({"type": "parsed", "chars": len(doc.text), "source": display_source})
 
-        # ── Step 2: LLM extraction ─────────────────────────────────────────
+        # ── Step 2: Keep the evidence ──────────────────────────────────────
+        # Before anything is derived, the bytes go into the immutable source
+        # store under the name the user brought in. Everything below cites this
+        # source, so a page can always be walked back to what it came from.
+        with span("store.ingest_source", source=display_source) as sp_store:
+            anchor = await store_source_evidence(
+                raw_bytes=await read_origin_bytes(source_str),
+                doc=doc,
+                display_source=display_source,
+                wiki_id=wiki_id,
+                settings=s,
+            )
+            sp_store["source_id"] = anchor.source_id
+            sp_store["chunks"] = len(anchor.chunks)
+        logger.info("Stored source evidence", extra={"source": display_source, **sp_store})
+        await emit(
+            {"type": "stored", "source_id": anchor.source_id, "chunks": len(anchor.chunks)}
+        )
+
+        # ── Step 3: LLM extraction ─────────────────────────────────────────
         await emit({"type": "extracting", "message": "Running LLM extraction…"})
         agent = get_agent(s)
         with span("llm.extract", provider=s.llm_extraction_provider, model=s.llm_model) as sp_extract:
@@ -163,7 +195,7 @@ async def ingest(
         )
         await emit({"type": "extracted", "pages": len(result.pages), "entities": len(result.entities)})
 
-        # ── Step 3: Persist each page ──────────────────────────────────────
+        # ── Step 4: Persist each page ──────────────────────────────────────
         slug_map: dict[str, str] = {}  # original slug → final slug
 
         for idx, page in enumerate(result.pages):
@@ -211,6 +243,7 @@ async def ingest(
                     wiki_id=wiki_id,
                     source_type=source_type,
                     display_source=display_source,
+                    anchor=anchor,
                 )
 
             logger.info(
@@ -225,7 +258,6 @@ async def ingest(
                         "content_chars": len(page.content or ""),
                         **sp_write,
                         **sp_index,
-                        **sp_g,
                     }
                 ),
             )
@@ -237,7 +269,7 @@ async def ingest(
             }
             await emit(event)
 
-        # ── Step 4: Graph — entities + relationships ───────────────────────
+        # ── Step 5: Graph — entities + relationships ───────────────────────
         entity_names: dict[str, str] = {}  # name → type
 
         with span(
@@ -273,9 +305,10 @@ async def ingest(
                 wiki_id=wiki_id,
                 source_type=source_type,
                 display_source=display_source,
+                anchor=anchor,
             )
 
-        # ── Step 5: Wire wikilinks as REFERENCES edges ────────────────────
+        # ── Step 6: Wire wikilinks as REFERENCES edges ────────────────────
         with span("graph.wikilinks_and_mentions") as sp_links:
             ref_edges = 0
             mention_edges = 0
@@ -297,7 +330,7 @@ async def ingest(
             sp_links["mention_edges"] = mention_edges
         logger.info("Wired wikilinks + mentions", extra={**sp_links})
 
-        # ── Step 6: Finalise log ───────────────────────────────────────────
+        # ── Step 7: Finalise log ───────────────────────────────────────────
         with span("sqlite.update_ingest_log", log_id=log_id, status="done") as sp_done:
             await sqlite.update_ingest_log(
                 log_id,
@@ -366,23 +399,94 @@ async def ingest_batch(
     return results
 
 
-def _source_id(wiki_id: str, display_source: str) -> str:
-    return f"source:{wiki_id}:{slugify(display_source) or 'source'}"
-
-
 def _entity_id(wiki_id: str, name: str) -> str:
     return f"entity:{wiki_id}:{slugify(name) or 'entity'}"
 
 
-def _source_citation(source_id: str, doc: ParsedDoc, quote: str | None = None) -> Citation:
-    evidence = quote if quote is not None else doc.text[:500]
-    start = doc.text.find(evidence) if evidence else -1
-    return Citation(
-        source_id=source_id,
-        chunk_id=f"{source_id}:chunk:0",
-        span_start=start if start >= 0 else None,
-        span_end=start + len(evidence) if start >= 0 else None,
-        quote=evidence or None,
+@dataclass(frozen=True)
+class SourceAnchor:
+    """The stored evidence a single ingest run derives everything from.
+
+    Ingest used to mint its own provenance id and cite a chunk id it invented,
+    so nothing a page claimed could be traced back to bytes anyone had kept.
+    The anchor is the real L0 source: citations resolve to chunks that exist,
+    and `/api/sources/{id}/derived` can answer for the source's own output.
+    """
+
+    source_id: str
+    text: str
+    # (chunk_id, start_offset, end_offset), in document order.
+    chunks: tuple[tuple[str, int, int], ...]
+
+    def _chunk_at(self, offset: int) -> str:
+        for chunk_id, start, end in self.chunks:
+            if start <= offset < end:
+                return chunk_id
+        return self.chunks[0][0] if self.chunks else self.source_id
+
+    def cite(self, quote: str | None = None) -> Citation:
+        evidence = quote if quote is not None else self.text[:500]
+        start = self.text.find(evidence) if evidence else -1
+        return Citation(
+            source_id=self.source_id,
+            chunk_id=self._chunk_at(start if start >= 0 else 0),
+            span_start=start if start >= 0 else None,
+            span_end=start + len(evidence) if start >= 0 else None,
+            quote=evidence or None,
+        )
+
+
+async def store_source_evidence(
+    *,
+    raw_bytes: bytes,
+    doc: ParsedDoc,
+    display_source: str,
+    wiki_id: str,
+    settings: Settings,
+) -> SourceAnchor:
+    """Record the bytes we ingested as L0 evidence and return their anchor.
+
+    Deliberately not degradable: a page whose provenance points at nothing is
+    worse than a failed ingest, and the store is local, so a failure here means
+    something is wrong that producing pages anyway would only hide.
+    """
+    result = await store_ingest_source(
+        origin_uri=display_source,
+        raw_bytes=raw_bytes,
+        wiki_id=wiki_id,
+        settings=settings,
+        normalized=NormalizedDoc(
+            text=doc.text,
+            mime=mime_for_doc_type(str(doc.metadata.get("type", ""))),
+            metadata=dict(doc.metadata),
+        ),
+    )
+
+    # Governed from the moment it lands, through the same registration the
+    # catalog pass uses — a source the user brought in is memory, and it should
+    # not need a separate manual step to be treated as such.
+    async with sqlite.get_db() as conn:
+        await ensure_personal_root(KnowledgeRepository(conn), wiki_id=wiki_id)
+        await register_source_asset(
+            MemoryAssetRegistry(conn),
+            KnowledgeRepository(conn),
+            wiki_id=wiki_id,
+            source_id=result.source.id,
+            source_type=result.source.source_type.value,
+            origin_uri=result.source.origin_uri,
+            content_hash=result.source.content_hash,
+            version=result.source.version,
+            ingested_at=result.source.ingested_at,
+            document_id=result.document.id,
+            change_note="Ingested",
+        )
+
+    return SourceAnchor(
+        source_id=result.source.id,
+        text=doc.text,
+        chunks=tuple(
+            (chunk.id, chunk.start_offset, chunk.end_offset) for chunk in result.chunks
+        ),
     )
 
 
@@ -395,36 +499,20 @@ async def _sync_extracted_result_to_knowledge(
     wiki_id: str,
     source_type: str,
     display_source: str,
+    anchor: SourceAnchor,
 ) -> None:
-    """Persist ingest-produced records with source-backed extraction provenance."""
+    """Persist ingest-produced records with source-backed extraction provenance.
+
+    The source's own record is written by `store_source_evidence` through the
+    shared registration, so this only writes what was *derived* from it.
+    """
     scope = f"wiki:{wiki_id}"
-    source_id = _source_id(wiki_id, display_source)
-    source_label = str(doc.metadata.get("title") or display_source)
-    source_citation = _source_citation(source_id, doc)
-    await repo.upsert_object(
-        KnowledgeObject(
-            id=source_id,
-            kind="source",
-            label=source_label,
-            scope=scope,
-            confidence=1.0,
-            extraction_method="EXTRACTED",
-            citations=[source_citation],
-            properties={
-                "source_type": source_type,
-                "origin_uri": display_source,
-                "parser_source": doc.source,
-                "metadata": doc.metadata,
-            },
-        )
-    )
     await ensure_personal_root(repo, wiki_id=wiki_id)
-    await link_to_self(repo, source_id, "saved_source", citation=source_citation)
 
     for page in result.pages:
         final_slug = slug_map.get(page.slug, page.slug)
         page_id = f"page:{wiki_id}:{final_slug}"
-        page_citation = _source_citation(source_id, doc, page.title)
+        page_citation = anchor.cite(page.title)
         await repo.upsert_object(
             KnowledgeObject(
                 id=page_id,
@@ -450,14 +538,21 @@ async def _sync_extracted_result_to_knowledge(
         )
         await link_to_self(repo, page_id, "saved_source", citation=page_citation, confidence=0.8)
 
+    # The pages this batch produced, so each entity can be tied back to where it
+    # was found. Entities used to be written with no edge to any page at all:
+    # pages hang off `person:self`, entities hung off nothing, and the entire
+    # extracted graph floated free of the person it is supposed to be about.
+    page_ids = [f"{wiki_id}:{slug_map.get(page.slug, page.slug)}" for page in result.pages]
+
     for entity in result.entities:
         name = str(entity.get("name", "")).strip()
         if not name:
             continue
-        entity_citation = _source_citation(source_id, doc, name)
+        entity_citation = anchor.cite(name)
+        entity_id = _entity_id(wiki_id, name)
         await repo.upsert_object(
             KnowledgeObject(
-                id=_entity_id(wiki_id, name),
+                id=entity_id,
                 kind="entity",
                 label=name,
                 scope=scope,
@@ -471,6 +566,21 @@ async def _sync_extracted_result_to_knowledge(
                 },
             )
         )
+        for suffix in page_ids:
+            page_id = f"page:{suffix}"
+            await repo.upsert_relationship(
+                KnowledgeRelationship(
+                    id=f"rel:{page_id}:mentions:{entity_id}",
+                    src_id=page_id,
+                    dst_id=entity_id,
+                    rel_type="mentions",
+                    scope=scope,
+                    confidence=0.7,
+                    extraction_method="EXTRACTED",
+                    citations=[entity_citation],
+                    properties={"source_type": source_type, "origin_uri": display_source},
+                )
+            )
 
     for rel in result.relationships:
         from_name = str(rel.get("from", "")).strip()
@@ -480,7 +590,7 @@ async def _sync_extracted_result_to_knowledge(
         rel_type = slugify(str(rel.get("type") or "related_to")).replace("-", "_") or "related_to"
         src_id = _entity_id(wiki_id, from_name)
         dst_id = _entity_id(wiki_id, to_name)
-        rel_citation = _source_citation(source_id, doc, f"{from_name} {to_name}")
+        rel_citation = anchor.cite(f"{from_name} {to_name}")
         await repo.upsert_relationship(
             KnowledgeRelationship(
                 id=f"rel:{src_id}:{rel_type}:{dst_id}",

@@ -4,6 +4,7 @@ import pytest
 
 from archivum.config import Settings
 from archivum.db import sqlite as sqlite_mod
+from archivum.memory.registry import MemoryAssetRegistry
 from archivum.indexing import (
     ReindexResult,
     reconcile_vault,
@@ -223,3 +224,55 @@ async def test_a_survived_reconcile_pass_keeps_memory_pages(env):
     await reconcile_vault(wiki_id="default", settings=env)
 
     assert await sqlite_mod.get_page("memory/facts", "default") is not None
+
+
+# ── Governance is part of indexing, not a separate errand ─────────────────────
+
+
+async def test_a_page_is_a_governed_memory_asset_as_soon_as_it_is_indexed(env):
+    """Writing a page should be enough to make it memory an agent can be given.
+
+    Registration used to happen only in the catalog pass, which nothing in the
+    app ever ran, so a vault could fill up with pages that the asset registry —
+    and therefore the profile page and every agent loadout — had never heard of.
+    """
+    write(env, "topics/retrieval", "# Retrieval design\n\nTwo passes.\n")
+
+    await reindex_page("topics/retrieval", wiki_id="default", settings=env)
+
+    async with sqlite_mod.get_db() as conn:
+        assets = await MemoryAssetRegistry(conn).list_assets(
+            wiki_id="default", asset_type="wiki"
+        )
+
+    assert [asset.id for asset in assets] == ["page:default:topics/retrieval"]
+    assert assets[0].page_slug == "topics/retrieval"
+    assert assets[0].name == "Retrieval design"
+    assert assets[0].owner == "person:self"
+
+
+async def test_distilled_memory_pages_do_not_register_a_second_asset(env):
+    """A page under memory/ already backs an asset; it must not get another id."""
+    write(env, "memory/persona-self", "# Persona\n\nPrefers uv.\n")
+
+    await reindex_page("memory/persona-self", wiki_id="default", settings=env)
+
+    async with sqlite_mod.get_db() as conn:
+        assets = await MemoryAssetRegistry(conn).list_assets(
+            wiki_id="default", asset_type="wiki"
+        )
+
+    assert assets == []
+
+
+async def test_reindexing_an_unchanged_page_does_not_churn_its_asset_version(env):
+    write(env, "notes/a", "# A\n\nBody.\n")
+    await reindex_page("notes/a", wiki_id="default", settings=env)
+    await reindex_page("notes/a", wiki_id="default", settings=env, force=True)
+
+    async with sqlite_mod.get_db() as conn:
+        assets = await MemoryAssetRegistry(conn).list_assets(
+            wiki_id="default", asset_type="wiki"
+        )
+
+    assert [asset.version for asset in assets] == [1]

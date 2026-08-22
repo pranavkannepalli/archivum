@@ -22,7 +22,10 @@ import { cn } from '../lib/cn';
  * means they may not.
  */
 
-const SELF_SCOPE = 'person:self';
+// Every memory asset is *owned* by person:self and *scoped* to the wiki it
+// belongs to. This page is the owner's view, so it filters on owner; filtering
+// on scope matches nothing and renders an empty section under a live count.
+const SELF_OWNER = 'person:self';
 
 export default function SelfSurface() {
   const [owner, setOwner] = useState<OwnerProfile | null>(null);
@@ -36,7 +39,7 @@ export default function SelfSurface() {
   useEffect(() => {
     Promise.all([
       getOwner(),
-      listMemoryAssets({ scope: SELF_SCOPE }),
+      listMemoryAssets({ owner: SELF_OWNER }),
       listMemoryAgents(),
     ])
       .then(([nextOwner, nextAssets, nextAgents]) => {
@@ -183,7 +186,7 @@ export default function SelfSurface() {
         <div className="self-sec" style={{ paddingBottom: '30vh' }}>
           <div className="tracebar" style={{ margin: 0 }}>
             <Icon name="file" size={13} />
-            This is memory scoped to <code style={{ fontFamily: 'var(--font-mono)' }}>{SELF_SCOPE}</code>.
+            This is memory owned by <code style={{ fontFamily: 'var(--font-mono)' }}>{SELF_OWNER}</code>.
             Turn a line off and the agents stop knowing it.
           </div>
         </div>

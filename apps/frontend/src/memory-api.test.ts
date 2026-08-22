@@ -71,6 +71,14 @@ describe('memory asset client', () => {
     expect(fetchMock.mock.calls[0][0]).toBe('/api/memory/assets');
   });
 
+  it('can ask for memory by owner, which is how the profile page reads it', async () => {
+    // Assets are owned by person:self but scoped to a wiki. Filtering on scope
+    // matches nothing, which is why /me used to render permanently empty.
+    fetchMock.mockResolvedValueOnce(jsonResponse([asset]));
+    await listMemoryAssets({ owner: 'person:self' });
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/memory/assets?owner=person%3Aself');
+  });
+
   it('encodes colon-bearing asset ids in status transitions', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ ...asset, status: 'archived' }));
     const updated = await setMemoryAssetStatus('memory:chat:src1', 'archived');
@@ -179,6 +187,10 @@ describe('graph audit client', () => {
     communities: [{ id: 'a1', label: 'Alpha', size: 3, member_ids: ['a1', 'a2', 'a3'] }],
     surprising_links: [],
     narrative: ['The graph holds 6 records.'],
+    // The report names its own records, so whatever draws it needs no second call.
+    edges: [{ source: 'a1', target: 'a2', relation: 'references', extraction_method: 'EXTRACTED' }],
+    node_labels: { a1: 'Alpha', a2: 'Beta', a3: 'Gamma' },
+    node_kinds: { a1: 'page', a2: 'page', a3: 'page' },
   };
 
   it('requests the audit with a surprise limit', async () => {

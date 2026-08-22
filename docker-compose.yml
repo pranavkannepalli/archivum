@@ -39,6 +39,13 @@ services:
       - OPENAI_COMPAT_BASE_URL=${OPENAI_COMPAT_BASE_URL:-}
       - OPENAI_COMPAT_API_KEY=${OPENAI_COMPAT_API_KEY:-}
       - OPENAI_COMPAT_AZURE_API_VERSION=${OPENAI_COMPAT_AZURE_API_VERSION:-2024-02-15-preview}
+      # Session capture reads agent transcripts from a mounted directory; unset
+      # here means the watcher does nothing rather than guessing at a path.
+      - TRANSCRIPT_DIRS=${TRANSCRIPT_DIRS:-}
+      - TRANSCRIPT_WATCH_ENABLED=${TRANSCRIPT_WATCH_ENABLED:-true}
+      - CODE_CACHE_DIR=${CODE_CACHE_DIR:-/data/code-cache}
+      - SUMMARY_WORKER_ENABLED=${SUMMARY_WORKER_ENABLED:-true}
+      - SUMMARY_WORKER_INTERVAL_SECONDS=${SUMMARY_WORKER_INTERVAL_SECONDS:-3600}
       - MCP_PUBLIC_URL=${MCP_PUBLIC_URL:-}
     volumes:
       - wiki_data:/data/wiki
@@ -47,6 +54,9 @@ services:
       - kuzu_data:/data/kuzu
       - codex_home:/home/app/.codex
       - claude_home:/home/app/.claude
+      # Agent transcripts, read-only: capture reads them and must never write
+      # back into a directory another tool owns.
+      - ${TRANSCRIPT_HOST_DIR:-./.no-transcripts}:/data/transcripts:ro
     networks:
       - archivum-net
     depends_on:
@@ -104,6 +114,13 @@ services:
       - OPENAI_COMPAT_BASE_URL=${OPENAI_COMPAT_BASE_URL:-}
       - OPENAI_COMPAT_API_KEY=${OPENAI_COMPAT_API_KEY:-}
       - OPENAI_COMPAT_AZURE_API_VERSION=${OPENAI_COMPAT_AZURE_API_VERSION:-2024-02-15-preview}
+      # Session capture reads agent transcripts from a mounted directory; unset
+      # here means the watcher does nothing rather than guessing at a path.
+      - TRANSCRIPT_DIRS=${TRANSCRIPT_DIRS:-}
+      - TRANSCRIPT_WATCH_ENABLED=${TRANSCRIPT_WATCH_ENABLED:-true}
+      - CODE_CACHE_DIR=${CODE_CACHE_DIR:-/data/code-cache}
+      - SUMMARY_WORKER_ENABLED=${SUMMARY_WORKER_ENABLED:-true}
+      - SUMMARY_WORKER_INTERVAL_SECONDS=${SUMMARY_WORKER_INTERVAL_SECONDS:-3600}
     ports:
       - "127.0.0.1:${ARCHIVUM_MCP_PORT:-8001}:8001"
     volumes:
@@ -111,6 +128,11 @@ services:
       - raw_data:/data/raw
       - db_data:/data
       - kuzu_data:/data/kuzu
+      # The MCP server summarises clusters too, so it needs the same signed-in
+      # CLI credentials the API has — otherwise `summarise_vault` is
+      # unauthenticated and every summary silently fails.
+      - codex_home:/home/app/.codex
+      - claude_home:/home/app/.claude
     networks:
       - archivum-net
     depends_on:

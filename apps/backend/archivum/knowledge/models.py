@@ -47,6 +47,12 @@ class ContextNode(BaseModel):
     extraction_method: ExtractionMethod = "EXTRACTED"
     confidence: float = 1.0
     citations: list[Citation] = Field(default_factory=list)
+    # What the record is, so a caller can judge relevance without resolving the
+    # citation. `excerpt` is the cited source itself and is only filled when the
+    # caller asked for it — mapping a repository should not cost its whole text.
+    signature: str = ""
+    summary: str = ""
+    excerpt: str = ""
 
 
 class ContextEdge(BaseModel):

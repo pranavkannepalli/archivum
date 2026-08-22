@@ -24,7 +24,10 @@ describe('classifyMarkdownLine', () => {
 
 describe('findInlineMarkdownMarks', () => {
   it('finds inline markdown delimiters that should be hidden in visual editing', () => {
-    expect(findInlineMarkdownMarks('This is **bold**, *emphasis*, and `code`.')).toEqual([
+    const markers = findInlineMarkdownMarks('This is **bold**, *emphasis*, and `code`.').filter(
+      (mark) => mark.kind.endsWith('-marker'),
+    );
+    expect(markers).toEqual([
       { from: 8, to: 10, kind: 'strong-marker' },
       { from: 14, to: 16, kind: 'strong-marker' },
       { from: 18, to: 19, kind: 'emphasis-marker' },
@@ -32,5 +35,25 @@ describe('findInlineMarkdownMarks', () => {
       { from: 34, to: 35, kind: 'code-marker' },
       { from: 39, to: 40, kind: 'code-marker' },
     ]);
+  });
+
+  it('spans the text between the delimiters so it can actually be styled', () => {
+    // Hiding `**` without bolding what it wrapped is worse than showing the
+    // raw markdown: the formatting becomes invisible rather than rendered.
+    const content = findInlineMarkdownMarks('This is **bold**, *emphasis*, and `code`.').filter(
+      (mark) => !mark.kind.endsWith('-marker'),
+    );
+    expect(content).toEqual([
+      { from: 10, to: 14, kind: 'strong' },
+      { from: 19, to: 27, kind: 'emphasis' },
+      { from: 35, to: 39, kind: 'code' },
+    ]);
+  });
+
+  it('keeps every range in document order for the decoration builder', () => {
+    // CodeMirror's RangeSetBuilder rejects out-of-order ranges outright.
+    const marks = findInlineMarkdownMarks('a **b** c *d* e `f`');
+    const starts = marks.map((mark) => mark.from);
+    expect(starts).toEqual([...starts].sort((left, right) => left - right));
   });
 });

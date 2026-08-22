@@ -4,6 +4,10 @@ chunk → persist. Evidence (L0) is immutable; re-ingest creates new versions.""
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
+from urllib.parse import urlparse
+
+import httpx
 
 from archivum.config import Settings, get_settings
 from archivum.store.blobs import BlobStore
@@ -16,9 +20,27 @@ from archivum.store.models import (
     Source,
     new_id,
 )
-from archivum.store.normalize import normalize
+from archivum.store.normalize import NormalizedDoc, normalize
 from archivum.store.repository import SourceStore
 from archivum.store.source_types import SourceType, detect_source_type
+
+
+async def read_origin_bytes(origin_uri: str, *, timeout: float = 30.0) -> bytes:
+    """The raw bytes behind an origin — a local path, a file: URI, or http(s).
+
+    L0 is raw evidence, so it has to be the bytes as they arrived rather than
+    anything a parser made of them.
+    """
+    parsed = urlparse(origin_uri)
+    if parsed.scheme in ("http", "https"):
+        async with httpx.AsyncClient(follow_redirects=True, timeout=timeout) as client:
+            response = await client.get(origin_uri)
+            response.raise_for_status()
+            return response.content
+    path = Path(parsed.path if parsed.scheme == "file" else origin_uri)
+    if not path.is_file():
+        raise FileNotFoundError(origin_uri)
+    return path.read_bytes()
 
 
 async def ingest_source(
@@ -31,12 +53,19 @@ async def ingest_source(
     store: SourceStore | None = None,
     blob_store: BlobStore | None = None,
     settings: Settings | None = None,
+    normalized: NormalizedDoc | None = None,
 ) -> IngestResult:
     """Ingest one source deterministically. Returns an IngestResult.
 
     Idempotent per (origin_uri, content_hash): identical re-ingest is a no-op
     that returns the existing rows with deduplicated=True. Changed bytes always
     produce a new version; existing rows and blobs are never mutated.
+
+    Pass `normalized` when the caller has already parsed the source. The wiki
+    ingest pipeline has, and re-parsing there would mean running a PDF or an
+    audio transcript through the parser twice for one upload. It also lets the
+    origin be the name the user brought in while the bytes come from wherever
+    they currently sit, which is how uploads reach a temp file.
     """
     s = settings or get_settings()
     store = store or SourceStore()
@@ -65,7 +94,7 @@ async def ingest_source(
     blob_store.put(raw_bytes)
 
     # Normalize (parse) into text + mime.
-    normalized = await normalize(origin_uri)
+    normalized = normalized or await normalize(origin_uri)
     normalized_hash = sha256_text(normalized.text)
 
     now = datetime.now(UTC).isoformat()

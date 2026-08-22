@@ -48,7 +48,17 @@ export type MarkdownLineBlock = {
   marker?: MarkdownMarker;
 };
 
-type InlineMarkdownKind = 'strong-marker' | 'emphasis-marker' | 'code-marker';
+// Two halves of the same job: the `-marker` kinds are the delimiters, which get
+// hidden, and the bare kinds are the text they wrap, which gets styled. Hiding
+// the delimiters alone is what made bold text render as plain text — the syntax
+// disappeared and nothing took its place.
+type InlineMarkdownKind =
+  | 'strong-marker'
+  | 'emphasis-marker'
+  | 'code-marker'
+  | 'strong'
+  | 'emphasis'
+  | 'code';
 
 export type InlineMarkdownMark = {
   from: number;
@@ -142,26 +152,36 @@ export function findInlineMarkdownMarks(text: string): InlineMarkdownMark[] {
   const marks: InlineMarkdownMark[] = [];
   const occupied = new Set<number>();
 
-  function addPair(openFrom: number, openTo: number, closeFrom: number, closeTo: number, kind: InlineMarkdownKind) {
+  function addPair(
+    openFrom: number,
+    openTo: number,
+    closeFrom: number,
+    closeTo: number,
+    kind: 'strong' | 'emphasis' | 'code',
+  ) {
     for (let index = openFrom; index < closeTo; index += 1) occupied.add(index);
-    marks.push({ from: openFrom, to: openTo, kind }, { from: closeFrom, to: closeTo, kind });
+    marks.push(
+      { from: openFrom, to: openTo, kind: `${kind}-marker` as InlineMarkdownKind },
+      { from: openTo, to: closeFrom, kind },
+      { from: closeFrom, to: closeTo, kind: `${kind}-marker` as InlineMarkdownKind },
+    );
   }
 
   for (const match of text.matchAll(/`([^`\n]+)`/g)) {
     const start = match.index ?? 0;
-    addPair(start, start + 1, start + match[0].length - 1, start + match[0].length, 'code-marker');
+    addPair(start, start + 1, start + match[0].length - 1, start + match[0].length, 'code');
   }
 
   for (const match of text.matchAll(/\*\*([^*\n]+)\*\*/g)) {
     const start = match.index ?? 0;
     if (occupied.has(start)) continue;
-    addPair(start, start + 2, start + match[0].length - 2, start + match[0].length, 'strong-marker');
+    addPair(start, start + 2, start + match[0].length - 2, start + match[0].length, 'strong');
   }
 
   for (const match of text.matchAll(/(?<!\*)\*([^*\n]+)\*(?!\*)/g)) {
     const start = match.index ?? 0;
     if (occupied.has(start)) continue;
-    addPair(start, start + 1, start + match[0].length - 1, start + match[0].length, 'emphasis-marker');
+    addPair(start, start + 1, start + match[0].length - 1, start + match[0].length, 'emphasis');
   }
 
   return marks.sort((a, b) => a.from - b.from);
@@ -239,8 +259,21 @@ class BlockHandleWidget extends WidgetType {
   }
 }
 
+const INLINE_MARKS: Record<string, Decoration> = {
+  strong: Decoration.mark({ class: 'cm-md-strong' }),
+  emphasis: Decoration.mark({ class: 'cm-md-emphasis' }),
+  code: Decoration.mark({ class: 'cm-md-code' }),
+};
+
 function buildBlockDecorations(view: EditorView): DecorationSet {
   const builder = new RangeSetBuilder<Decoration>();
+
+  // Lines the cursor is on keep their raw syntax. Formatting you cannot see is
+  // formatting you cannot remove — with the delimiters hidden everywhere there
+  // is no way to tell where bold starts, or to get back out of it.
+  const editing = new Set(
+    view.state.selection.ranges.map((range) => view.state.doc.lineAt(range.head).number),
+  );
 
   for (const { from, to } of view.visibleRanges) {
     let position = from;
@@ -248,11 +281,21 @@ function buildBlockDecorations(view: EditorView): DecorationSet {
       const line = view.state.doc.lineAt(position);
       const block = classifyMarkdownLine(line.text);
 
+      const onCursorLine = editing.has(line.number);
       builder.add(
         line.from,
         line.from,
         Decoration.line({
-          class: `cm-markdown-block cm-markdown-${block.kind}`,
+          // `cm-prompt` drives the empty-line hint. It cannot key off
+          // `.cm-activeLine`, because `highlightActiveLine` is not one of this
+          // editor's extensions and that class is never applied.
+          class: [
+            'cm-markdown-block',
+            `cm-markdown-${block.kind}`,
+            block.kind === 'blank' && onCursorLine ? 'cm-prompt' : '',
+          ]
+            .filter(Boolean)
+            .join(' '),
         }),
       );
 
@@ -276,14 +319,20 @@ function buildBlockDecorations(view: EditorView): DecorationSet {
         );
       }
 
+      const revealing = onCursorLine;
       for (const mark of findInlineMarkdownMarks(line.text)) {
+        if (mark.from === mark.to) continue;
+        const isDelimiter = mark.kind.endsWith('-marker');
+        if (isDelimiter && revealing) continue;
         builder.add(
           line.from + mark.from,
           line.from + mark.to,
-          Decoration.replace({
-            widget: new MarkdownMarkerWidget('', mark.kind),
-            inclusive: false,
-          }),
+          isDelimiter
+            ? Decoration.replace({
+                widget: new MarkdownMarkerWidget('', mark.kind),
+                inclusive: false,
+              })
+            : INLINE_MARKS[mark.kind],
         );
       }
 

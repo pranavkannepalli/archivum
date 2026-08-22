@@ -25,6 +25,9 @@ frontend/.vite/
 # Graphify
 graphify-out/
 
+# Archgraph parsed-AST cache (rebuildable, and never yours to commit)
+.archivum-cache/
+
 # Graph export (never commit generated artifacts)
 graph-export-out/
 mcp-demo-out/

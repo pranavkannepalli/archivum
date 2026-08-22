@@ -52,13 +52,18 @@ _TS_CONFIG = LanguageConfig(
     call_types=frozenset({"call_expression"}),
 )
 
+# The TSX grammar is a superset of JavaScript and handles JSX, so `.js`/`.jsx`
+# need no extra dependency — only an entry here. Leaving them out meant the most
+# common language in most repositories produced no code records at all.
 _TSX_CONFIG = LanguageConfig(
     name="tsx",
-    suffixes=(".tsx",),
+    suffixes=(".tsx", ".js", ".jsx", ".mjs", ".cjs"),
     ts_module="tree_sitter_typescript",
     ts_language_fn="language_tsx",
     class_types=frozenset({"class_declaration", "interface_declaration"}),
-    function_types=frozenset({"function_declaration", "method_definition"}),
+    function_types=frozenset(
+        {"function_declaration", "method_definition", "generator_function_declaration"}
+    ),
     import_types=frozenset({"import_statement"}),
     call_types=frozenset({"call_expression"}),
 )

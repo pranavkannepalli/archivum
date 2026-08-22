@@ -9,6 +9,7 @@ from archivum.auth import create_access_token
 from archivum.config import get_settings
 from archivum.main import create_app
 from archivum.api import pages
+from archivum.indexing import ReindexResult, project_page_graph
 
 
 class BacklinksRouteTests(unittest.TestCase):
@@ -120,7 +121,14 @@ class BacklinksRouteTests(unittest.TestCase):
 
 
 class BacklinkIndexingTests(unittest.IsolatedAsyncioTestCase):
-    async def test_sync_page_graph_adds_references_for_existing_wikilinks(self):
+    """Covers the projection the write path actually runs.
+
+    These used to exercise a copy of this logic that lived in the pages router
+    and no longer had any callers, so they stayed green while saying nothing
+    about what a real page write does.
+    """
+
+    async def test_page_graph_projection_adds_references_for_existing_wikilinks(self):
         target = {
             "id": 4,
             "slug": "target-page",
@@ -133,22 +141,23 @@ class BacklinkIndexingTests(unittest.IsolatedAsyncioTestCase):
         }
 
         with (
-            patch("archivum.api.pages.graph.upsert_page", new=AsyncMock()) as upsert_page,
-            patch("archivum.api.pages.graph.clear_references_from_page", new=AsyncMock()),
-            patch("archivum.api.pages.graph.add_reference", new=AsyncMock()) as add_reference,
-            patch("archivum.api.pages.sqlite.get_page", new=AsyncMock(return_value=target)),
+            patch("archivum.indexing.graph.upsert_page", new=AsyncMock()) as upsert_page,
+            patch("archivum.indexing.graph.clear_references_from_page", new=AsyncMock()),
+            patch("archivum.indexing.graph.add_reference", new=AsyncMock()) as add_reference,
+            patch("archivum.indexing.sqlite.get_page", new=AsyncMock(return_value=target)),
         ):
-            await pages._sync_page_graph(
+            await project_page_graph(
                 "source-page",
                 "Source Page",
                 "See [[target-page]] and [[target-page|Target]].",
                 "default",
+                ReindexResult(slug="source-page"),
             )
 
         upsert_page.assert_awaited_once_with("source-page", "Source Page", "default")
         add_reference.assert_awaited_once_with("source-page", "target-page", "default")
 
-    async def test_sync_page_graph_slugifies_display_text_wikilinks(self):
+    async def test_page_graph_projection_slugifies_display_text_wikilinks(self):
         target = {
             "id": 4,
             "slug": "target-page",
@@ -166,21 +175,22 @@ class BacklinkIndexingTests(unittest.IsolatedAsyncioTestCase):
             return None
 
         with (
-            patch("archivum.api.pages.graph.upsert_page", new=AsyncMock()),
-            patch("archivum.api.pages.graph.clear_references_from_page", new=AsyncMock()),
-            patch("archivum.api.pages.graph.add_reference", new=AsyncMock()) as add_reference,
-            patch("archivum.api.pages.sqlite.get_page", new=AsyncMock(side_effect=get_page)),
+            patch("archivum.indexing.graph.upsert_page", new=AsyncMock()),
+            patch("archivum.indexing.graph.clear_references_from_page", new=AsyncMock()),
+            patch("archivum.indexing.graph.add_reference", new=AsyncMock()) as add_reference,
+            patch("archivum.indexing.sqlite.get_page", new=AsyncMock(side_effect=get_page)),
         ):
-            await pages._sync_page_graph(
+            await project_page_graph(
                 "source-page",
                 "Source Page",
                 "See [[Target Page|Target]].",
                 "default",
+                ReindexResult(slug="source-page"),
             )
 
         add_reference.assert_awaited_once_with("source-page", "target-page", "default")
 
-    async def test_sync_page_graph_preserves_folder_wikilink_targets(self):
+    async def test_page_graph_projection_preserves_folder_wikilink_targets(self):
         target = {
             "id": 4,
             "slug": "smoke/target-page",
@@ -198,16 +208,17 @@ class BacklinkIndexingTests(unittest.IsolatedAsyncioTestCase):
             return None
 
         with (
-            patch("archivum.api.pages.graph.upsert_page", new=AsyncMock()),
-            patch("archivum.api.pages.graph.clear_references_from_page", new=AsyncMock()),
-            patch("archivum.api.pages.graph.add_reference", new=AsyncMock()) as add_reference,
-            patch("archivum.api.pages.sqlite.get_page", new=AsyncMock(side_effect=get_page)),
+            patch("archivum.indexing.graph.upsert_page", new=AsyncMock()),
+            patch("archivum.indexing.graph.clear_references_from_page", new=AsyncMock()),
+            patch("archivum.indexing.graph.add_reference", new=AsyncMock()) as add_reference,
+            patch("archivum.indexing.sqlite.get_page", new=AsyncMock(side_effect=get_page)),
         ):
-            await pages._sync_page_graph(
+            await project_page_graph(
                 "smoke/source-page",
                 "Source Page",
                 "See [[smoke/Target Page|Target]].",
                 "default",
+                ReindexResult(slug="smoke/source-page"),
             )
 
         add_reference.assert_awaited_once_with(
@@ -216,7 +227,7 @@ class BacklinkIndexingTests(unittest.IsolatedAsyncioTestCase):
             "default",
         )
 
-    async def test_sync_page_graph_clears_stale_outgoing_references_before_reindexing(self):
+    async def test_page_graph_projection_clears_stale_outgoing_references_before_reindexing(self):
         target = {
             "id": 4,
             "slug": "current-target",
@@ -229,16 +240,17 @@ class BacklinkIndexingTests(unittest.IsolatedAsyncioTestCase):
         }
 
         with (
-            patch("archivum.api.pages.graph.upsert_page", new=AsyncMock()),
-            patch("archivum.api.pages.graph.clear_references_from_page", new=AsyncMock()) as clear_references,
-            patch("archivum.api.pages.graph.add_reference", new=AsyncMock()) as add_reference,
-            patch("archivum.api.pages.sqlite.get_page", new=AsyncMock(return_value=target)),
+            patch("archivum.indexing.graph.upsert_page", new=AsyncMock()),
+            patch("archivum.indexing.graph.clear_references_from_page", new=AsyncMock()) as clear_references,
+            patch("archivum.indexing.graph.add_reference", new=AsyncMock()) as add_reference,
+            patch("archivum.indexing.sqlite.get_page", new=AsyncMock(return_value=target)),
         ):
-            await pages._sync_page_graph(
+            await project_page_graph(
                 "source-page",
                 "Source Page",
                 "Now only [[current-target]] remains.",
                 "default",
+                ReindexResult(slug="source-page"),
             )
 
         clear_references.assert_awaited_once_with("source-page", "default")

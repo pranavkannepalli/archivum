@@ -6,16 +6,28 @@ from archivum.archgraph.mapper import CandidateRelationship, Provenance
 
 _CONVERSATION_KINDS: frozenset[str] = frozenset({"conversation", "chunk"})
 
+# Below this length an identifier is an ordinary English word as often as it is
+# a symbol — `id`, `run`, `get`, `map`. Linking those would attach a decision to
+# nearly every note in the vault and bury the edges that carry meaning.
+_MIN_BRIDGE_NAME_LENGTH = 4
+
+_WORD_RE = re.compile(r"\w+")
+
 
 def _contains_sha(text: str, sha: str) -> bool:
     """Return True if *sha* appears as a substring in *text*."""
     return sha in text
 
 
-def _contains_word(text: str, word: str) -> bool:
-    """Return True if *word* appears as a whole-word token in *text*."""
-    pattern = r"\b" + re.escape(word) + r"\b"
-    return bool(re.search(pattern, text))
+def _tokens(text: str) -> set[str]:
+    """The whole-word tokens in *text*.
+
+    Tokenising each conversation once and testing symbols against the set turns
+    what was a regex compile per (symbol, conversation) pair into a hash lookup.
+    At repo scale — thousands of symbols, hundreds of notes — that is the
+    difference between seconds and milliseconds on every ingest.
+    """
+    return set(_WORD_RE.findall(text))
 
 
 async def bridge_evidence(l1) -> list[CandidateRelationship]:
@@ -58,13 +70,13 @@ async def bridge_evidence(l1) -> list[CandidateRelationship]:
                 )
 
     # 2. symbol decided_in conversation: whole-word match in conversation text → INFERRED
+    conversation_tokens = [(conv, _tokens(conv.get("text", ""))) for conv in conversations]
     for symbol in symbols:
         name = symbol.get("label", "")
-        if not name:
+        if len(name) < _MIN_BRIDGE_NAME_LENGTH:
             continue
-        for conv in conversations:
-            conv_text = conv.get("text", "")
-            if _contains_word(conv_text, name):
+        for conv, tokens in conversation_tokens:
+            if name in tokens:
                 prov = Provenance(
                     chunk_id=conv["id"],
                     span="L0",

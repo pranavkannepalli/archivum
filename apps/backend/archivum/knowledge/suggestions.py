@@ -97,6 +97,9 @@ class MemorySuggestion(BaseModel):
     rationale: str = ""
     estimated_durability: str = ""
     expires_at: str | None = None
+    # None for agent-authored suggestions; a share principal id when a
+    # recipient proposed it.
+    author_principal_id: str | None = None
     status: SuggestionStatus
     # Written by SQLite defaults on insert/update. Exposed so the activity
     # stream can order suggestions against page edits and ingest logs.
@@ -200,6 +203,9 @@ async def _migrate_review_card_columns(conn: aiosqlite.Connection) -> None:
         "rationale": "TEXT NOT NULL DEFAULT ''",
         "estimated_durability": "TEXT NOT NULL DEFAULT ''",
         "expires_at": "TEXT",
+        # Set when a share recipient proposed the edit, so the review queue can
+        # say "Alice suggested this" rather than attributing it to an agent.
+        "author_principal_id": "TEXT",
     }
     for column, definition in additions.items():
         if column not in columns:
@@ -232,6 +238,7 @@ class SuggestionRepository:
         rationale: str = "",
         estimated_durability: str = "",
         expires_at: str | None = None,
+        author_principal_id: str | None = None,
     ) -> MemorySuggestion:
         suggestion = MemorySuggestion(
             id=f"suggestion:{uuid4()}",
@@ -249,6 +256,7 @@ class SuggestionRepository:
             rationale=rationale,
             estimated_durability=estimated_durability,
             expires_at=expires_at,
+            author_principal_id=author_principal_id,
             status="pending",
         )
         await self._conn.execute(
@@ -257,8 +265,8 @@ class SuggestionRepository:
                 (id, target_id, suggestion_type, proposed_markdown,
                  proposed_objects, citations, proposed_scopes, scores, duplicates,
                  conflicts, retention_tier, agent_visibility, rationale,
-                 estimated_durability, expires_at, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 estimated_durability, expires_at, author_principal_id, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 suggestion.id,
@@ -276,6 +284,7 @@ class SuggestionRepository:
                 suggestion.rationale,
                 suggestion.estimated_durability,
                 suggestion.expires_at,
+                suggestion.author_principal_id,
                 suggestion.status,
             ),
         )
@@ -358,8 +367,60 @@ class SuggestionRepository:
             (new_target, old_target),
         ) as cursor:
             moved = cursor.rowcount or 0
+        moved += await self._repoint_citations(
+            wiki_id=wiki_id, old_slug=old_slug, new_slug=new_slug
+        )
         await self._conn.commit()
         return moved
+
+    async def _repoint_citations(
+        self, *, wiki_id: str, old_slug: str, new_slug: str
+    ) -> int:
+        """Follow the rename into the citations that name the page.
+
+        Only `target_id` used to move, which misses everything distillation
+        produces: those target `wiki:<id>` and record the page they came from in
+        their citations. Left behind, a pending item cites a slug that no longer
+        resolves, so it is not attributable to any page and disappears from
+        review rather than showing up against the moved one.
+
+        Source ids are compared whole, never by prefix — `topics/old` must not
+        drag `topics/old-but-different` along with it.
+        """
+        old_ids = {f"page:{old_slug}", f"page:{wiki_id}:{old_slug}"}
+        async with self._conn.execute(
+            "SELECT id, citations FROM memory_suggestions WHERE citations LIKE ?",
+            (f"%{old_slug}%",),
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        touched = 0
+        for row in rows:
+            try:
+                citations = json.loads(row["citations"])
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(citations, list):
+                continue
+            changed = False
+            for citation in citations:
+                if not isinstance(citation, dict):
+                    continue
+                source_id = citation.get("source_id")
+                if source_id not in old_ids:
+                    continue
+                prefix = "page:" if source_id == f"page:{old_slug}" else f"page:{wiki_id}:"
+                citation["source_id"] = f"{prefix}{new_slug}"
+                changed = True
+            if not changed:
+                continue
+            await self._conn.execute(
+                "UPDATE memory_suggestions SET citations=?, updated_at=datetime('now') "
+                "WHERE id=?",
+                (json.dumps(citations), row["id"]),
+            )
+            touched += 1
+        return touched
 
     async def expire_for_page(self, *, wiki_id: str, slug: str) -> int:
         """Retire suggestions against a page that no longer exists.
@@ -534,6 +595,7 @@ class SuggestionRepository:
             rationale=row["rationale"],
             estimated_durability=row["estimated_durability"],
             expires_at=row["expires_at"],
+            author_principal_id=row["author_principal_id"],
             status=row["status"],
             created_at=row["created_at"] or "",
             updated_at=row["updated_at"] or "",

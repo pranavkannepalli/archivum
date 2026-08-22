@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Annotated, Any
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -35,6 +37,10 @@ class Settings(BaseSettings):
     blob_dir: Path = Path("/data/blobs")
     db_path: Path = Path("/data/archivum.db")
     kuzu_path: Path = Path("/data/kuzu")
+    # Parsed-AST cache for indexed repositories. Kept beside the other data
+    # rather than inside each repository, so indexing never writes into a
+    # working tree you are trying to keep clean.
+    code_cache_dir: Path = Path("/data/code-cache")
 
     # ── Qdrant ─────────────────────────────────────────────────────────────
     qdrant_url: str = "http://localhost:6333"
@@ -114,6 +120,43 @@ class Settings(BaseSettings):
     # Capture enqueues; this worker does the slow, possibly LLM-backed half.
     distill_worker_enabled: bool = True
     distill_worker_interval_seconds: int = 10
+    # Where agents write session transcripts. Empty means session capture is
+    # off: the backend usually runs in a container, so this has to be mounted in
+    # and named rather than guessed at.
+    #
+    # Read as a comma-separated list rather than JSON. Compose passes an empty
+    # string when the variable is unset, and pydantic's default decoding for a
+    # list field treats that as malformed JSON and refuses to start the process
+    # at all — a formatting detail should not be able to take the vault down.
+    transcript_dirs: Annotated[list[Path], NoDecode] = []
+
+    @field_validator("transcript_dirs", mode="before")
+    @classmethod
+    def _split_transcript_dirs(cls, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        text = value.strip()
+        if not text:
+            return []
+        if text.startswith("["):
+            import json
+
+            try:
+                return json.loads(text)
+            except ValueError:
+                pass
+        return [part.strip() for part in text.split(",") if part.strip()]
+    transcript_watch_enabled: bool = True
+    transcript_watch_interval_seconds: int = 20
+
+    # Cluster summaries: the half of GraphRAG that makes global questions
+    # answerable. Hourly by default — themes change over days, and this is the
+    # one place real model time is spent.
+    summary_worker_enabled: bool = True
+    summary_worker_interval_seconds: int = 3600
+
+    code_repo_worker_enabled: bool = True
+    code_repo_worker_interval_seconds: int = 15
     retention_sweep_interval_seconds: int = 3600
 
     # ── Memory distillation ───────────────────────────────────────────────
@@ -147,6 +190,19 @@ class Settings(BaseSettings):
     mcp_host: str = "127.0.0.1"
     mcp_port: int = 8001
     mcp_api_key: str = ""
+
+    # How long a writer waits for another writer before giving up. SQLite
+    # serialises writes, and this vault always has background workers going, so
+    # contention is normal rather than exceptional. The driver's 5s default was
+    # short enough that a forced reindex — which holds a connection across Kuzu
+    # and Qdrant projection — lost the race and surfaced as a 500.
+    sqlite_busy_timeout_seconds: float = 30.0
+
+    # Dense search always returns its top-k, so without a floor a query that
+    # matches nothing still comes back with a full page of confident-looking
+    # results. Tuned against the default local bge-small model, where genuine
+    # matches score ~0.6-0.8 and noise sits at ~0.50.
+    search_min_similarity: float = 0.58
     mcp_public_url: str = ""
 
 

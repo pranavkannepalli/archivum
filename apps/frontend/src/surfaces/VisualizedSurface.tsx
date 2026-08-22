@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   getGraph,
@@ -7,14 +7,18 @@ import {
   getOwner,
   listAgentBindings,
   listMemoryAgents,
+  listRepos,
   type AgentProfile,
-  type GraphCommunity,
+  type CodeRepo,
   type GraphReport,
   type MemoryStats,
   type OwnerProfile,
 } from '../api';
 import type { GraphEdge, GraphNode } from '../types';
 import { Icon } from '../shell/Icon';
+import KnowledgeGraph from './KnowledgeGraph';
+
+type Tab = 'graph' | 'flow' | 'agents';
 import { cn } from '../lib/cn';
 
 /**
@@ -24,170 +28,6 @@ import { cn } from '../lib/cn';
  * communities, the funnel from memory stats, the agent bars from bindings. If a
  * number is unavailable the panel says so rather than inventing a plausible one.
  */
-
-type Tab = 'graph' | 'flow' | 'agents';
-
-const RING_RADIUS = 190;
-const LEAF_RADIUS = 320;
-
-function ringLayout(count: number, index: number) {
-  const angle = -90 + index * (360 / Math.max(count, 1));
-  const radians = (angle * Math.PI) / 180;
-  return {
-    angle,
-    x: 500 + Math.cos(radians) * RING_RADIUS,
-    y: 280 + Math.sin(radians) * RING_RADIUS * 0.72,
-  };
-}
-
-function leafPosition(angle: number, offset: number) {
-  const radians = ((angle + offset) * Math.PI) / 180;
-  return {
-    x: 500 + Math.cos(radians) * LEAF_RADIUS,
-    y: 280 + Math.sin(radians) * LEAF_RADIUS * 0.72,
-  };
-}
-
-/**
- * Group page nodes by their top-level folder.
- *
- * Used when the knowledge store has not found link communities yet, which is
- * the normal state of a young vault. Folders are the user's own grouping, so
- * this is still their structure — not a guess.
- */
-function foldersAsCommunities(nodes: GraphNode[]): GraphCommunity[] {
-  const groups = new Map<string, string[]>();
-  for (const node of nodes) {
-    if (node.type !== 'page') continue;
-    const folder = node.id.includes('/') ? node.id.split('/')[0] : 'root';
-    const members = groups.get(folder) ?? [];
-    members.push(node.id);
-    groups.set(folder, members);
-  }
-  return [...groups.entries()]
-    .map(([label, member_ids]) => ({
-      id: `folder:${label}`,
-      label,
-      size: member_ids.length,
-      member_ids,
-    }))
-    .sort((a, b) => b.size - a.size);
-}
-
-function GraphPanel({
-  owner,
-  communities,
-  nodes,
-  isDemo,
-}: {
-  owner: OwnerProfile | null;
-  communities: GraphCommunity[];
-  nodes: GraphNode[];
-  isDemo: boolean;
-}) {
-  const labelById = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const node of nodes) map.set(node.id, node.label);
-    return map;
-  }, [nodes]);
-
-  const fromLinks = communities.length > 0;
-  const rings = (fromLinks ? communities : foldersAsCommunities(nodes)).slice(0, 8);
-
-  if (rings.length === 0) {
-    return (
-      <div className="stream-empty">
-        <h3>Nothing to draw yet</h3>
-        <p>
-          Capture a few entries and the shape of your vault — you at the centre, your subjects
-          around you — will appear here.
-        </p>
-      </div>
-    );
-  }
-
-  return (
-    <>
-      {isDemo && (
-        <div className="demo-banner">
-          <Icon name="alert" />
-          <span>
-            The graph store is unreachable, so this is example data — not your vault. Check that
-            Kuzu is running.
-          </span>
-        </div>
-      )}
-      <div className="mapwrap" style={{ margin: '0 18px 18px', height: 460 }}>
-        <div className="grid-dots" />
-        <svg width="100%" height="100%" viewBox="0 0 1000 560" preserveAspectRatio="xMidYMid meet">
-          {rings.map((community, index) => {
-            const { x, y, angle } = ringLayout(rings.length, index);
-            const members = community.member_ids.slice(0, 3);
-            return (
-              <g key={community.id}>
-                <line className="glink hot" x1={500} y1={280} x2={x} y2={y} />
-                {members.map((memberId, memberIndex) => {
-                  const spread = (memberIndex - (members.length - 1) / 2) * 17;
-                  const leaf = leafPosition(angle, spread);
-                  return (
-                    <g className="gnode" key={memberId}>
-                      <line className="glink" x1={x} y1={y} x2={leaf.x} y2={leaf.y} />
-                      <circle cx={leaf.x} cy={leaf.y} r={6.5} fill="var(--a-500)" opacity={0.6} />
-                      <text x={leaf.x} y={leaf.y + 17} textAnchor="middle">
-                        {labelById.get(memberId) ?? memberId}
-                      </text>
-                    </g>
-                  );
-                })}
-                <g className="gnode">
-                  <circle
-                    cx={x}
-                    cy={y}
-                    r={11 + Math.sqrt(Math.max(community.size, 1)) * 1.5}
-                    fill="var(--a-500)"
-                    opacity={0.8}
-                    stroke="var(--bg-panel)"
-                    strokeWidth={2}
-                  />
-                  <text x={x} y={y + 30} textAnchor="middle" style={{ fontWeight: 600, fontSize: 11.5 }}>
-                    {community.label}
-                  </text>
-                  <text x={x} y={y + 43} textAnchor="middle" style={{ fontSize: 10, opacity: 0.7 }}>
-                    {community.size}
-                  </text>
-                </g>
-              </g>
-            );
-          })}
-
-          <g className="gnode">
-            <circle cx={500} cy={280} r={62} fill="var(--a-500)" opacity={0.07} />
-            <circle cx={500} cy={280} r={46} fill="var(--a-500)" opacity={0.13} />
-            <circle cx={500} cy={280} r={30} fill="var(--a-500)" />
-            <text x={500} y={285} textAnchor="middle" style={{ fontSize: 15, fontWeight: 600, fill: '#fff' }}>
-              {owner?.initials ?? '··'}
-            </text>
-            <text x={500} y={332} textAnchor="middle" style={{ fontSize: 12, fontWeight: 600, fill: 'var(--a-500)' }}>
-              {owner?.name ?? 'You'}
-            </text>
-            <text x={500} y={346} textAnchor="middle" style={{ fontSize: 10 }}>
-              person · self
-            </text>
-          </g>
-        </svg>
-        <div className="legend">
-          <div>
-            <span className="dot" style={{ background: 'var(--a-500)' }} />
-            {fromLinks
-              ? 'Clusters found in the links between entries'
-              : 'Grouped by the folders you made — no link clusters yet'}
-          </div>
-        </div>
-      </div>
-    </>
-  );
-}
-
 function FlowPanel({ stats }: { stats: MemoryStats | null }) {
   if (!stats) return <div className="surface-loading">Counting…</div>;
 
@@ -342,14 +182,25 @@ export default function VisualizedSurface() {
     null,
   );
   const [agents, setAgents] = useState<AgentProfile[]>([]);
+  const [repos, setRepos] = useState<CodeRepo[]>([]);
+  // Undefined means the vault itself; a repo scope points the same analysis at
+  // code. The clustering and surprise algorithms never cared which graph they
+  // were given — only the routes did.
+  const [scope, setScope] = useState<string | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
+
+  useEffect(() => {
+    listRepos()
+      .then((next) => setRepos(next.filter((repo) => repo.status === 'ready')))
+      .catch(() => setRepos([]));
+  }, []);
 
   useEffect(() => {
     Promise.all([
       getOwner(),
       getMemoryStats(),
-      getGraphAudit().catch(() => null),
+      getGraphAudit(10, scope).catch(() => null),
       getGraph().catch(() => null),
       listMemoryAgents().catch(() => []),
     ])
@@ -361,11 +212,10 @@ export default function VisualizedSurface() {
         setAgents(nextAgents);
       })
       .catch((err) => setError(err instanceof Error ? err.message : 'Could not load'));
-  }, []);
+  }, [scope]);
 
   if (error) return <div className="surface-error">{error}</div>;
 
-  const communities = audit?.communities ?? [];
 
   return (
     <div className="surface on viz-root">
@@ -374,6 +224,27 @@ export default function VisualizedSurface() {
           <div className="viz-title">
             <h1>Visualized</h1>
             <p>What is actually under the vault — the graph, the memory pipeline, and who reads what.</p>
+            {repos.length > 0 && (
+              <div className="viz-scope" style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                <button
+                  type="button"
+                  className={cn('btn btn-sm', scope === undefined ? 'btn-primary' : 'btn-outline')}
+                  onClick={() => setScope(undefined)}
+                >
+                  Your vault
+                </button>
+                {repos.map((repo) => (
+                  <button
+                    key={repo.scope}
+                    type="button"
+                    className={cn('btn btn-sm', scope === repo.scope ? 'btn-primary' : 'btn-outline')}
+                    onClick={() => setScope(repo.scope)}
+                  >
+                    {repo.name}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="tiles">
@@ -453,11 +324,14 @@ export default function VisualizedSurface() {
           </div>
 
           {tab === 'graph' && (
-            <GraphPanel
-              owner={owner}
-              communities={communities}
-              nodes={graph?.nodes ?? []}
-              isDemo={graph?.source === 'demo'}
+            <KnowledgeGraph
+              report={audit}
+              onOpen={(nodeId) => {
+                // Page records carry their slug in the id; anything else is a
+                // record without a page, so there is nowhere to navigate to.
+                const match = /^page:[^:]+:(.+)$/.exec(nodeId);
+                if (match) navigate(`/wiki/${match[1]}`);
+              }}
             />
           )}
           {tab === 'flow' && <FlowPanel stats={stats} />}

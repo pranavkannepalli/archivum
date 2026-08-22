@@ -17,6 +17,7 @@ from archivum.db.graph import (
     upsert_page,
 )
 from archivum.db.qdrant_client import clear_projection_index, index_page
+from archivum.knowledge.graph_audit import LINK_SCOPES
 from archivum.knowledge.models import Citation, KnowledgeObject
 from archivum.knowledge.personal_root import SELF_ID
 from archivum.knowledge.repository import KnowledgeRepository
@@ -133,15 +134,28 @@ async def rebuild_knowledge_projections(
             "Knowledge projection rebuild reached its object limit; "
             "paginate canonical objects before retrying."
         )
+    # Repositories registered to this wiki are part of its graph. Filtering on
+    # `wiki:` alone meant a repository could be fully indexed into canonical
+    # knowledge and still never appear as one node in the graph view.
+    from archivum.code_repos import owned_repo_scopes  # local: avoids an import cycle
+
+    try:
+        repo_scopes = await owned_repo_scopes(wiki_id=wiki_id)
+    except Exception as exc:  # noqa: BLE001 - a missing register is not a failed rebuild
+        logger.warning("Could not read the repository register: %s", exc)
+        repo_scopes = set()
+
+    included_scopes = {target_scope, *repo_scopes}
     objects = [
         object_
         for object_ in all_objects
-        if object_.scope == target_scope or object_.id == SELF_ID
+        if object_.scope in included_scopes or object_.id == SELF_ID
     ]
     objects_by_id = {object_.id: object_ for object_ in objects}
     relationships = [
         relationship
-        for relationship in await repo.list_relationships(scope=target_scope)
+        for scope in sorted(included_scopes) + list(LINK_SCOPES)
+        for relationship in await repo.list_relationships(scope=scope)
         if relationship.src_id in objects_by_id and relationship.dst_id in objects_by_id
     ]
 

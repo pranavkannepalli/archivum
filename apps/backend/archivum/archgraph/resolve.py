@@ -5,6 +5,12 @@ from collections import defaultdict
 from archivum.archgraph.models import CodeEdge, CodeNode, Extraction, ExtractionMethod
 
 
+# Relations whose target a call/heritage site knows only by bare name, and which
+# therefore have to be matched back to a real symbol. `inherits` belongs here for
+# the same reason `calls` does: `class Retry(Base)` names Base, not its id.
+_RESOLVABLE_RELATIONS: frozenset[str] = frozenset({"calls", "references", "inherits"})
+
+
 def _bare_name(node_id: str) -> str:
     """Return the last underscore-separated segment of a node id."""
     return node_id.rsplit("_", 1)[-1]
@@ -49,7 +55,7 @@ def resolve_cross_file(extractions: list[Extraction]) -> list[CodeEdge]:
 
     for ext in extractions:
         for edge in ext.edges:
-            if edge.relation not in ("calls", "references"):
+            if edge.relation not in _RESOLVABLE_RELATIONS:
                 continue
             if edge.target in all_node_ids:
                 # Target already known -> not an unresolved external
@@ -62,6 +68,28 @@ def resolve_cross_file(extractions: list[Extraction]) -> list[CodeEdge]:
             if len(key) < 3:
                 continue
             candidates = symbol_table.get(key, [])
+
+            # A name defined in the same file is what the call site meant. This
+            # is the common case in any codebase, and skipping it — as this used
+            # to — left the majority of calls pointing at a bare name that
+            # matched no node, so the graph came out almost entirely edgeless.
+            # Resolution within one file is certain, so it is EXTRACTED.
+            same_file = [c for c in candidates if node_file.get(c) == edge.source_file]
+            if len(same_file) == 1:
+                target_id = same_file[0]
+                if (edge.source, target_id, edge.relation) not in extracted_keys:
+                    new_edges.append(
+                        CodeEdge(
+                            source=edge.source,
+                            target=target_id,
+                            relation=edge.relation,
+                            method=ExtractionMethod.EXTRACTED,
+                            source_file=edge.source_file,
+                            source_location=edge.source_location,
+                            confidence=edge.confidence,
+                        )
+                    )
+                continue
 
             # Filter out candidates in same file as edge source
             cross_candidates = [

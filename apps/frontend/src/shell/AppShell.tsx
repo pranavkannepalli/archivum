@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { getOwner, listEntries, type Entry, type OwnerProfile } from '../api';
+import { ensureDailyNote, getOwner, listEntries, type Entry, type OwnerProfile } from '../api';
 import { useAppDispatch, useAppState } from '../store';
 import { cn } from '../lib/cn';
 import { Icon } from './Icon';
@@ -80,6 +80,21 @@ export default function AppShell() {
     setAskOpen(true);
   }, []);
 
+  /**
+   * Open today's note, creating it on the first ask.
+   *
+   * The endpoint existed from the start and nothing called it, so there was no
+   * "today" — the one page a daily-notes habit needs to be one keystroke away.
+   */
+  const openToday = useCallback(async () => {
+    try {
+      const page = await ensureDailyNote();
+      navigate(`/wiki/${page.slug}`);
+    } catch {
+      // Never block the shell on it; the vault is still usable without today.
+    }
+  }, [navigate]);
+
   useEffect(() => {
     function onKeydown(event: KeyboardEvent) {
       const target = event.target as HTMLElement | null;
@@ -108,6 +123,11 @@ export default function AppShell() {
       if (typing || mod) return;
 
       const key = event.key.toLowerCase();
+      if (key === 't') {
+        event.preventDefault();
+        void openToday();
+        return;
+      }
       if (key === 'c') {
         event.preventDefault();
         setAskOpen(false);
@@ -119,7 +139,7 @@ export default function AppShell() {
 
     window.addEventListener('keydown', onKeydown);
     return () => window.removeEventListener('keydown', onKeydown);
-  }, [navigate, openSheet]);
+  }, [navigate, openSheet, openToday]);
 
   const pinned = useMemo(() => pages.slice(0, 3), [pages]);
 
@@ -160,10 +180,23 @@ export default function AppShell() {
               Everything
               <span className="n">{pages.length || ''}</span>
             </button>
+            {/* Two different things, so two buttons. Find was previously
+                reachable only by knowing ⌘P, which meant text search inside
+                pages was, in practice, not in the product. */}
+            <button type="button" onClick={() => openSheet('file')}>
+              <Icon name="search" />
+              Find text
+              <span className="kbd" style={{ marginLeft: 'auto' }}>⌘P</span>
+            </button>
             <button type="button" onClick={() => openSheet('ask')}>
               <Icon name="sparkles" />
-              Ask
+              Ask a question
               <span className="kbd" style={{ marginLeft: 'auto' }}>⌘K</span>
+            </button>
+            <button type="button" onClick={openToday}>
+              <Icon name="clock" />
+              Today
+              <span className="kbd" style={{ marginLeft: 'auto' }}>T</span>
             </button>
             <button type="button" onClick={() => navigate('/entries?needs_review=1')}>
               <Icon name="check" />

@@ -172,3 +172,55 @@ async def test_catalog_scopes_pages_to_the_requested_wiki(settings):
         report = await sync_catalog(conn, wiki_id="second")
 
     assert report.asset_ids == ["page:second:other"]
+
+
+@pytest.mark.asyncio
+async def test_a_page_asset_summarises_the_page_rather_than_the_file_format(settings):
+    """"Editable markdown page." was the summary of all 31 pages in the vault.
+
+    Every wiki asset carried the same sentence, and the surface renders
+    `summary || name` — so the boilerplate hid the page title behind a fact that
+    is true of every page and tells you nothing about any of them. The point of
+    a summary is to say what this particular memory holds.
+
+    The self-citation had the same shape of problem: its quote was the record's
+    own id, so a citation proved only that the record existed.
+    """
+    from archivum.memory.catalog import register_page_asset
+
+    async with sqlite_mod.get_db() as conn:
+        repo = KnowledgeRepository(conn)
+        registry = MemoryAssetRegistry(conn)
+        await sync_page_to_knowledge(
+            repo,
+            slug="projects/perceo/archivum",
+            title="Archivum",
+            markdown=(
+                "---\ntitle: Archivum\ntags: [memory]\n---\n\n"
+                "# Archivum\n\n"
+                "Archivum is a local-first knowledge vault that keeps its pages as "
+                "plain markdown on disk.\n\nMore detail follows."
+            ),
+            wiki_id="default",
+        )
+        asset_id = await register_page_asset(
+            registry,
+            repo,
+            wiki_id="default",
+            slug="projects/perceo/archivum",
+            title="Archivum",
+            content=(
+                "---\ntitle: Archivum\ntags: [memory]\n---\n\n"
+                "# Archivum\n\n"
+                "Archivum is a local-first knowledge vault that keeps its pages as "
+                "plain markdown on disk.\n\nMore detail follows."
+            ),
+        )
+        asset = await registry.get_asset(asset_id)
+
+    assert asset is not None
+    assert asset.summary != "Editable markdown page."
+    assert "local-first knowledge vault" in asset.summary
+    # Frontmatter and the title heading are not what the page is about.
+    assert "---" not in asset.summary
+    assert not asset.summary.startswith("#")

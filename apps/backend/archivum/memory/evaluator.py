@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 
 from archivum.capture.schema import Conversation
 from archivum.config import Settings
+from archivum.llm.prompt_context import with_context
 from archivum.memory.atoms import SEMANTIC_ATOM_TYPES, Atom
 
 logger = logging.getLogger(__name__)
@@ -96,7 +97,10 @@ async def evaluate_conversation(
     try:
         raw = await _chat(
             settings,
-            system=_SYSTEM_PROMPT,
+            # Dated at call time: a module-level constant would carry
+            # whenever the process started, which for a long-lived server is
+            # not today.
+            system=with_context(_SYSTEM_PROMPT),
             user=_render_user_prompt(conversation, atoms),
         )
         return _parse_response(raw, atom_count=len(atoms))

@@ -60,3 +60,55 @@ async def test_no_bridge_without_evidence():
     ])
     results = await bridge_evidence(l1)
     assert results == []
+
+
+async def test_short_symbol_names_do_not_bridge():
+    """A symbol called 'id' or 'run' matches ordinary prose, not a decision.
+
+    Bridging reads free text, so a two- or three-character identifier would link
+    to nearly every conversation in the vault and bury the edges that mean
+    something. Real names earn the edge; noise words do not.
+    """
+    l1 = FakeL1([
+        {"id": "sym-id", "kind": "symbol", "scope": "repo:a", "label": "id"},
+        {"id": "sym-run", "kind": "symbol", "scope": "repo:a", "label": "run"},
+        {
+            "id": "conv-1",
+            "kind": "conversation",
+            "scope": "repo:a",
+            "label": "chat",
+            "text": "we run the id check before the deploy",
+        },
+    ])
+    assert await bridge_evidence(l1) == []
+
+
+async def test_bridging_scales_to_a_realistic_repo():
+    """Thousands of symbols against hundreds of notes must not be quadratic-slow.
+
+    The first implementation compiled a regex per (symbol, conversation) pair.
+    At repo scale that is millions of regex searches on every ingest.
+    """
+    import time
+
+    objects = [
+        {"id": f"sym-{i}", "kind": "symbol", "scope": "repo:a", "label": f"handler_{i}"}
+        for i in range(3000)
+    ]
+    objects += [
+        {
+            "id": f"conv-{j}",
+            "kind": "conversation",
+            "scope": "wiki:default",
+            "label": "note",
+            "text": "we discussed handler_7 and the retry policy at length " * 20,
+        }
+        for j in range(300)
+    ]
+
+    started = time.perf_counter()
+    results = await bridge_evidence(FakeL1(objects))
+    elapsed = time.perf_counter() - started
+
+    assert len(results) == 300, "handler_7 should link to each note that names it"
+    assert elapsed < 2.0, f"bridging took {elapsed:.1f}s"

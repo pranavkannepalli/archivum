@@ -14,6 +14,8 @@ from typing import Any
 import anthropic
 
 from archivum.config import Settings, get_settings
+from archivum.llm.cli_client import CliModelError, cli_chat_completion
+from archivum.llm.prompt_context import with_context
 from archivum.ingest.parsers import ParsedDoc
 from archivum.llm.openrouter_client import openrouter_chat_completion
 from archivum.llm.openai_compat_client import openai_compat_chat_completion
@@ -93,6 +95,40 @@ def slugify(title: str) -> str:
 
 # ── Agent ─────────────────────────────────────────────────────────────────────
 
+def _first_json_object(reply: str) -> str:
+    """The first balanced JSON object in a reply, ignoring prose around it.
+
+    A CLI answers like a person: a sentence, a fenced block, an offer to help
+    further. Scanning for the object is what makes that usable rather than a
+    parse error.
+    """
+    start = reply.find("{")
+    if start == -1:
+        raise ValueError("no JSON object in reply")
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(reply)):
+        char = reply[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return reply[start : index + 1]
+    raise ValueError("unbalanced JSON object in reply")
+
+
 class WikiAgent:
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or get_settings()
@@ -119,6 +155,9 @@ class WikiAgent:
 
         if self.settings.llm_extraction_provider in {"openai_compat", "ollama"}:
             return await self._extract_openai_compat_async(doc)
+
+        if self.settings.llm_extraction_provider in {"codex_cli", "claude_cli"}:
+            return await self._extract_cli_async(doc)
 
         raise ValueError(f"Unsupported llm_extraction_provider: {self.settings.llm_extraction_provider}")
 
@@ -177,6 +216,43 @@ class WikiAgent:
             return self._fallback_extraction(doc)
         except anthropic.APIError as exc:
             logger.error("Anthropic API error: %s", exc)
+            return self._fallback_extraction(doc)
+
+    async def _extract_cli_async(self, doc: ParsedDoc) -> ExtractionResult:
+        """Extract through a signed-in CLI, on a subscription rather than tokens.
+
+        Extraction is the heaviest model user here — every dropped file goes
+        through it — and it could only reach paid API providers, so the cheap
+        path was wired to the half of the pipeline that barely runs.
+
+        CLIs narrate around their answers, so the JSON is located in the reply
+        rather than assumed to be the whole of it.
+        """
+        text = doc.text
+        if len(text) > 12000:
+            text = text[:12000] + "\n\n[... document truncated for processing ...]"
+
+        prompt = with_context(
+            f"{WIKI_SYSTEM_PROMPT}\n\n"
+            f"Source: {doc.source}\n\n"
+            f"Document:\n{text}\n\n"
+            "Reply with the JSON object and nothing else.",
+            owner=getattr(self.settings, "owner_username", "") or None,
+            extra={"Source document": doc.source},
+        )
+
+        try:
+            reply = await cli_chat_completion(
+                provider=self.settings.llm_extraction_provider,
+                model=self.settings.llm_model,
+                prompt=prompt,
+            )
+            data = json.loads(_first_json_object(reply))
+            return self._parse_extraction(data, doc)
+        except (CliModelError, json.JSONDecodeError, ValueError) as exc:
+            # A dropped file must still land. Deterministic extraction is worse
+            # than a model's, and much better than losing the document.
+            logger.warning("CLI extraction unusable (%s); falling back", exc)
             return self._fallback_extraction(doc)
 
     async def _extract_openrouter_async(self, doc: ParsedDoc) -> ExtractionResult:

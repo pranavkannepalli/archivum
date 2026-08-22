@@ -22,6 +22,8 @@ from archivum.api import memory as memory_routes
 from archivum.api import pages as pages_routes
 from archivum.api import public as public_routes
 from archivum.api import share as share_routes
+from archivum.api import shared as shared_routes
+from archivum.api import sharing as sharing_routes
 from archivum.api import suggestions as suggestions_routes
 from archivum.api.graph import router as graph_router
 from archivum.api.context import router as context_router
@@ -30,6 +32,7 @@ from archivum.api.search import router as search_router
 from archivum.api.capture import router as capture_router
 from archivum.api.capture_preview import router as capture_preview_router
 from archivum.api.sources import router as sources_router
+from archivum.api.repos import router as repos_router
 from archivum.api.system import router as system_router
 from archivum.config import Settings, get_settings
 from archivum.db import qdrant_client as qdrant
@@ -40,8 +43,12 @@ from archivum.logging_config import setup_logging
 from archivum.observability import new_trace_id, set_trace_id
 from archivum.memory.retention import run_retention_worker
 from archivum.page_write_queue import run_page_write_worker
+from archivum.capture.transcript_watch import run_transcript_watcher
+from archivum.code_repos import run_code_repo_worker
+from archivum.summaries import run_summary_worker
 from archivum.distillation import run_distill_worker
 from archivum.indexing import reconcile_vault
+from archivum.vault_scaffold import claim_vault_dir, ensure_default_folders
 from archivum.vault_watch import run_vault_watcher
 from archivum.rate_limit import RateLimitMiddleware
 
@@ -80,13 +87,22 @@ class _CSRFProtection(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next) -> Response:  # type: ignore[override]
         method = request.method.upper()
         if method in {"POST", "PUT", "PATCH", "DELETE"} and request.url.path.startswith("/api/"):
-            if request.url.path == "/api/auth/refresh":
+            # These establish a session, so they cannot present a CSRF token
+            # they have not been issued yet. Both are guarded by an unguessable
+            # token in the body and a per-token rate limit instead.
+            if request.url.path in {"/api/auth/refresh", "/api/shared/claim"}:
                 return await call_next(request)
 
             auth_header = request.headers.get("authorization")
             # Non-browser clients (MCP/CLI) use Bearer tokens; skip CSRF.
             if not (auth_header and auth_header.startswith("Bearer ")):
-                has_cookie_auth = "access_token" in request.cookies or "refresh_token" in request.cookies
+                has_cookie_auth = (
+                    "access_token" in request.cookies
+                    or "refresh_token" in request.cookies
+                    # A share recipient's session is a cookie too, so their
+                    # writes (comments) need the same double-submit check.
+                    or "share_session" in request.cookies
+                )
                 if has_cookie_auth:
                     csrf_cookie = request.cookies.get("csrf_token")
                     csrf_header = request.headers.get("x-csrf-token")
@@ -109,6 +125,11 @@ async def lifespan(app: FastAPI):
 
     # Ensure directories exist
     settings.wiki_dir.mkdir(parents=True, exist_ok=True)
+    # Before anything writes: one vault directory belongs to one wiki. Page
+    # paths do not carry the wiki, so two backends sharing a WIKI_DIR would
+    # overwrite each other's markdown without either noticing.
+    claim_vault_dir(settings.wiki_dir, wiki_id=settings.wiki_id)
+    settings.code_cache_dir.mkdir(parents=True, exist_ok=True)
     settings.raw_dir.mkdir(parents=True, exist_ok=True)
     settings.db_path.parent.mkdir(parents=True, exist_ok=True)
     settings.kuzu_path.mkdir(parents=True, exist_ok=True)
@@ -122,6 +143,13 @@ async def lifespan(app: FastAPI):
     # Ensure owner exists
     owner_pw = settings.owner_password or secrets.token_urlsafe(24)
     await sqlite.ensure_owner_exists(settings.owner_username, hash_password(owner_pw))
+
+    # A vault with no folders makes every capture a filing decision; give it a
+    # starting shape. Only ever on a vault that has none of its own.
+    try:
+        await ensure_default_folders(wiki_id="default", settings=settings)
+    except Exception as exc:  # noqa: BLE001 - folders are not worth a failed boot
+        logger.warning("Could not seed default folders: %s", exc)
 
     # Catch up on anything edited while the app was down, before serving.
     if settings.vault_reconcile_on_start:
@@ -152,10 +180,34 @@ async def lifespan(app: FastAPI):
     if settings.retention_sweep_enabled:
         retention_task = asyncio.create_task(run_retention_worker(settings))
 
+    # Repositories index on a queue for the same reason distillation does:
+    # reading a repo is slow, and the wiki has to stay responsive meanwhile.
+    code_repo_task: asyncio.Task[None] | None = None
+    if settings.code_repo_worker_enabled:
+        code_repo_task = asyncio.create_task(run_code_repo_worker(settings))
+
+    # Sessions arrive without being asked for. Everything downstream of capture
+    # reads conversations, and nothing was ever capturing them.
+    transcript_task: asyncio.Task[None] | None = None
+    if settings.transcript_watch_enabled:
+        transcript_task = asyncio.create_task(run_transcript_watcher(settings))
+
+    summary_task: asyncio.Task[None] | None = None
+    if settings.summary_worker_enabled:
+        summary_task = asyncio.create_task(run_summary_worker(settings))
+
     try:
         yield
     finally:
-        for task in (write_worker_task, retention_task, vault_watch_task, distill_task):
+        for task in (
+            write_worker_task,
+            retention_task,
+            vault_watch_task,
+            distill_task,
+            code_repo_task,
+            transcript_task,
+            summary_task,
+        ):
             if task:
                 task.cancel()
                 try:
@@ -198,11 +250,14 @@ def create_app() -> FastAPI:
     app.include_router(query_router)
     app.include_router(graph_router)
     app.include_router(sources_router)
+    app.include_router(repos_router)
     app.include_router(capture_router)
     app.include_router(capture_preview_router)
     app.include_router(system_router)
     app.include_router(share_routes.router)
     app.include_router(share_routes.mgmt_router)
+    app.include_router(sharing_routes.router)
+    app.include_router(shared_routes.router)
     app.include_router(suggestions_routes.router)
 
     return app

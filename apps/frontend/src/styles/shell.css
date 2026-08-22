@@ -779,3 +779,518 @@ textarea.inp { height: auto; padding: 11px 14px; line-height: 1.6; resize: none;
   font-weight: 700;
   font-size: var(--t-12);
 }
+
+/* ---------------- sharing ---------------- */
+/* Rides on .sheet / .sheet-item so the share dialog reads as the same surface
+   as Capture and Ask. Only the row internals are new. */
+.share-person { height: auto; padding: 9px 10px; gap: 11px; }
+.share-person:hover { background: none; }
+
+.share-av {
+  width: 26px; height: 26px; border-radius: 50%; flex: none;
+  background: linear-gradient(145deg, var(--a-400), var(--a-700));
+  color: #fff; display: grid; place-items: center;
+  font-size: var(--t-11); font-weight: 600;
+}
+.share-av-link { background: var(--bg-active); color: var(--text-2); }
+
+.share-name {
+  flex: 1; min-width: 0; font-size: var(--t-13); font-weight: 500; color: var(--text);
+}
+.share-sub { display: block; font-size: var(--t-11); font-weight: 400; color: var(--text-3); margin-top: 2px; }
+.share-tail { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+
+.share-empty {
+  padding: 22px 14px; text-align: center;
+  font-size: var(--t-13); color: var(--text-3); line-height: 1.6;
+}
+
+.share-claim {
+  padding: 12px 15px; border-bottom: 1px solid var(--border);
+  background: var(--accent-soft);
+}
+.share-claim-head {
+  display: flex; align-items: center; gap: 7px; margin-bottom: 9px;
+  font-size: var(--t-12); color: var(--text-2);
+}
+.share-claim-head i { color: var(--accent-text); }
+.share-claim-head b { color: var(--text); font-weight: 600; }
+
+.share-copy { display: flex; align-items: center; gap: 7px; }
+.share-copy input {
+  flex: 1; min-width: 0; height: 30px; padding: 0 10px;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--bg-input); color: var(--text-2);
+  font-family: var(--font-mono); font-size: var(--t-11); outline: none;
+}
+.share-copy input:focus { border-color: var(--border-focus); }
+.share-copy-inset { padding: 2px 10px 10px 47px; }
+
+.share-error {
+  padding: 10px 15px; border-top: 1px solid var(--border);
+  font-size: var(--t-12); color: var(--bad); background: var(--bad-soft);
+}
+
+/* A held item is waiting on the owner, so it borrows the review queue's warn
+   language rather than inventing a third state colour. */
+.share-hold { display: flex; align-items: flex-start; gap: 11px; padding: 11px 12px;
+  border: 1px solid var(--border); border-left: 2px solid var(--warn);
+  border-radius: 0 var(--r-md) var(--r-md) 0; background: var(--bg-panel); margin-bottom: 8px; }
+.share-hold .txt { flex: 1; min-width: 0; font-size: var(--t-13); line-height: 1.55; }
+.share-hold .sub { font-size: var(--t-11); color: var(--text-3); margin-top: 5px;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+/* ---------------- recipient surfaces ---------------- */
+/* A shared page is read by someone who is not a member of this vault, so it
+   gets a reading surface rather than the shell — but the same tokens, so it
+   still looks like the place it came from. */
+.shared-root { min-height: 100vh; background: var(--bg); color: var(--text); overflow-y: auto; }
+.shared-root .col { padding-top: 6vh; padding-bottom: 20vh; }
+
+.shared-doc h1 {
+  font-size: var(--t-32); font-weight: 600; letter-spacing: -0.025em;
+  line-height: 1.15; margin: 0 0 16px;
+}
+.shared-eyebrow { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.shared-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 20px; }
+
+.shared-note { font-size: var(--t-13); color: var(--text-3); line-height: 1.6; margin: 0; }
+
+.shared-children { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; }
+.shared-child { text-decoration: none; }
+
+.shared-sources {
+  margin-top: 40px; padding-top: 18px; border-top: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 9px;
+}
+.shared-source { display: flex; align-items: center; gap: 9px; font-size: var(--t-13); }
+.shared-source a { color: var(--accent-text); text-decoration: none; }
+.shared-source a:hover { text-decoration: underline; }
+/* Cited but not shared: named so the reader knows the claim is grounded,
+   unlinked so they never hit a login wall. */
+.shared-source-locked {
+  display: inline-flex; align-items: center; gap: 6px;
+  color: var(--text-3); cursor: default;
+}
+.shared-source-locked i { opacity: .7; }
+
+.wikilink-plain { color: var(--text-2); border-bottom: 1px dotted var(--border-strong); }
+
+.shared-comment {
+  margin-top: 36px; padding: 15px 16px;
+  border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--bg-panel);
+}
+.shared-comment textarea {
+  width: 100%; margin-top: 9px; min-height: 84px; padding: 10px 12px; resize: vertical;
+  border: 1px solid var(--border); border-radius: var(--r-md);
+  background: var(--bg-input); color: var(--text);
+  font-family: var(--font-sans); font-size: var(--t-14); line-height: 1.6; outline: none;
+}
+.shared-comment textarea:focus { border-color: var(--border-focus); }
+.shared-comment-foot {
+  display: flex; align-items: center; gap: 10px; margin-top: 10px;
+  font-size: var(--t-11); color: var(--text-3);
+}
+.shared-comment-foot button { margin-left: auto; }
+
+.shared-gone, .shared-claim-card {
+  max-width: 46ch; margin: 12vh auto 0; text-align: center;
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+}
+.shared-gone i, .shared-claim-card i { color: var(--text-3); }
+.shared-gone h1, .shared-claim-card h1 {
+  margin: 0; font-size: var(--t-21); font-weight: 600; letter-spacing: -0.015em;
+}
+.shared-gone p, .shared-claim-card p {
+  margin: 0; font-size: var(--t-13); color: var(--text-2); line-height: 1.6;
+}
+
+.shared-index-head { padding-bottom: 20px; border-bottom: 1px solid var(--border); }
+.shared-index-head h1 {
+  margin: 8px 0 6px; font-size: var(--t-26); font-weight: 600; letter-spacing: -0.02em;
+}
+
+
+/* Open tasks in the stream. A standing list above the timeline: what still
+   needs doing, ticked from where you already are. */
+.tasks { margin: 0 0 18px; }
+.task {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 6px;
+  border-radius: 8px;
+}
+.task:hover { background: rgba(255, 255, 255, 0.03); }
+.task-box {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  border: 1.5px solid var(--text-3);
+  background: transparent;
+  cursor: pointer;
+}
+.task-box:hover { border-color: var(--a-500); background: rgba(75, 145, 241, 0.12); }
+.task-text { font-size: var(--t-14); color: var(--text-1); }
+
+
+/* ---------------- knowledge graph ---------------- */
+/* A real node-link view: any record can connect to any other, which is the
+   whole point and exactly what a ring layout could not show. */
+.graph-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 18px 10px;
+}
+.graph-search {
+  flex: none;
+  width: 240px;
+  padding: 7px 11px;
+  font-size: var(--t-13);
+  color: var(--text-1);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.graph-search:focus { outline: none; border-color: var(--a-500); }
+.graph-meta { font-size: var(--t-12); color: var(--text-3); }
+.graph-canvas {
+  height: 560px;
+  margin: 0 18px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: radial-gradient(circle at 50% 40%, rgba(75,145,241,0.05), transparent 70%);
+}
+.legend-row { display: flex; flex-wrap: wrap; gap: 12px; }
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--t-12);
+  color: var(--text-2);
+}
+.legend-note { margin-top: 8px; font-size: var(--t-12); color: var(--text-3); }
+
+/* ============================================================
+   Markdown editing surface
+   ============================================================
+   The block extension has always emitted these classes — nothing styled them,
+   so headings sat at body size, hidden `**` left bold text looking plain, the
+   drag handle rendered as literal "⋮⋮" in the text flow, and a checkbox was the
+   characters `[ ]`. The machinery was there; only the presentation was missing.
+   Everything below is that presentation. */
+
+.cm-markdown-block {
+  position: relative;
+  padding-left: 2px;
+}
+
+/* ---------------- headings ---------------- */
+.cm-markdown-heading-1,
+.cm-markdown-heading-2,
+.cm-markdown-heading-3,
+.cm-markdown-heading-4,
+.cm-markdown-heading-5,
+.cm-markdown-heading-6 {
+  font-weight: 650;
+  color: var(--text);
+  letter-spacing: -0.011em;
+}
+.cm-markdown-heading-1 { font-size: var(--t-32); line-height: 1.25 !important; margin-top: 26px; }
+.cm-markdown-heading-2 { font-size: var(--t-26); line-height: 1.3 !important;  margin-top: 22px; }
+.cm-markdown-heading-3 { font-size: var(--t-21); line-height: 1.35 !important; margin-top: 18px; }
+.cm-markdown-heading-4 { font-size: var(--t-18); line-height: 1.4 !important;  margin-top: 14px; }
+.cm-markdown-heading-5 { font-size: var(--t-16); line-height: 1.45 !important; margin-top: 12px; }
+.cm-markdown-heading-6 { font-size: var(--t-15); line-height: 1.45 !important; color: var(--text-2); margin-top: 12px; }
+/* The first line of a document should not be pushed down by a heading margin. */
+.cm-content > .cm-markdown-block:first-child { margin-top: 0; }
+
+/* ---------------- inline ---------------- */
+/* These are what make formatting visible once the delimiters are hidden. */
+.cm-md-strong   { font-weight: 680; color: var(--text); }
+.cm-md-emphasis { font-style: italic; }
+.cm-md-code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  padding: 0.12em 0.34em;
+  border-radius: var(--r-xs);
+  background: var(--bg-active);
+  color: var(--accent-text);
+}
+
+/* ---------------- markers ---------------- */
+.cm-markdown-marker {
+  display: inline-block;
+  color: var(--text-3);
+  user-select: none;
+}
+/* Bullets and numbers sit in the margin so wrapped lines align to the text,
+   not to the marker — the thing that makes a list read as a list. */
+/* Hanging indent, built from a gutter rather than a negative text-indent.
+   `text-indent: -26px` moved the *first* line of the block, which dragged the
+   bullet outside the document's left edge while every other block started at
+   the same 2px — so lists hung off to the left instead of lining up. The marker
+   now sits in a gutter the padding reserves for it: bullet flush with the text
+   column, content and wrapped lines indented past it. */
+.cm-markdown-unordered-list,
+.cm-markdown-ordered-list,
+.cm-markdown-task-open,
+.cm-markdown-task-done {
+  padding-left: 28px;
+}
+.cm-markdown-marker-unordered-list,
+.cm-markdown-marker-ordered-list {
+  width: 26px;
+  /* Pulls the marker back into the gutter, leaving its left edge at the same
+     2px as a paragraph. */
+  margin-left: -26px;
+  color: var(--text-2);
+}
+.cm-markdown-marker-ordered-list { font-variant-numeric: tabular-nums; }
+
+/* ---------------- tasks ---------------- */
+.cm-task-toggle {
+  width: 26px;
+  margin-left: -26px;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  font-size: 1.02em;
+  line-height: inherit;
+  color: var(--text-3);
+  transition: color var(--dur-1) var(--ease);
+}
+.cm-task-toggle:hover { color: var(--accent-text); }
+.cm-markdown-marker-task-done { color: var(--accent); }
+/* A finished task should read as finished without having to be re-read. */
+.cm-markdown-task-done { color: var(--text-3); text-decoration: line-through; text-decoration-color: var(--border-strong); }
+
+/* ---------------- quote, rule, code ---------------- */
+.cm-markdown-quote {
+  padding-left: 16px;
+  border-left: 2px solid var(--accent);
+  color: var(--text-2);
+  font-style: italic;
+}
+.cm-markdown-thematic-break {
+  /* The characters are replaced by an empty widget, so the rule is drawn here. */
+  border-bottom: 1px solid var(--border-strong);
+  height: 0;
+  margin: 16px 0;
+  line-height: 0 !important;
+  min-height: 0 !important;
+}
+.cm-markdown-code-fence {
+  font-family: var(--font-mono);
+  font-size: var(--t-13);
+  color: var(--text-3);
+}
+.cm-markdown-marker-code-fence {
+  font-size: var(--t-11);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 1px 6px;
+  border-radius: var(--r-full);
+  background: var(--bg-active);
+}
+
+/* ---------------- drag handle ---------------- */
+/* Lives in the margin and only appears on the row you are pointing at. Always
+   visible, it was noise on every single line. */
+.cm-block-handle {
+  position: absolute;
+  left: -22px;
+  top: 0.28em;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: none;
+  color: var(--text-3);
+  font-size: 11px;
+  line-height: 1;
+  cursor: grab;
+  opacity: 0;
+  transition: opacity var(--dur-1) var(--ease), background var(--dur-1) var(--ease);
+}
+.cm-markdown-block:hover .cm-block-handle { opacity: 1; }
+.cm-block-handle:hover { background: var(--bg-hover); color: var(--text-2); }
+.cm-block-handle:active { cursor: grabbing; }
+.cm-block-handle:focus-visible { opacity: 1; outline: 1px solid var(--border-focus); }
+
+/* ---------------- placeholder ---------------- */
+/* Notion's most-copied affordance: the empty line you are on tells you what to
+   do next instead of sitting blank. */
+.cm-markdown-blank.cm-prompt::after {
+  content: "Write, or press / for commands";
+  position: absolute;
+  left: 2px;
+  top: 0;
+  color: var(--text-3);
+  pointer-events: none;
+}
+
+/* ============================================================
+   Rendered markdown
+   ============================================================
+   Every surface that displays markdown it did not author shares this: the
+   share page, public wiki pages, and answers from Ask. One renderer, one set
+   of styles — a document is supposed to look the same wherever it is read. */
+
+.md-body,
+.shared-doc .body {
+  color: var(--text-2);
+  font-size: var(--t-15);
+  line-height: 1.72;
+}
+
+.md-body > :first-child,
+.shared-doc .body > :first-child { margin-top: 0; }
+
+.md-body h1, .shared-doc .body h1,
+.md-body h2, .shared-doc .body h2,
+.md-body h3, .shared-doc .body h3,
+.md-body h4, .shared-doc .body h4,
+.md-body h5, .shared-doc .body h5,
+.md-body h6, .shared-doc .body h6 {
+  color: var(--text);
+  font-weight: 650;
+  letter-spacing: -0.011em;
+  line-height: 1.3;
+  margin: 1.6em 0 0.5em;
+}
+.md-body h1, .shared-doc .body h1 { font-size: var(--t-26); }
+.md-body h2, .shared-doc .body h2 { font-size: var(--t-21); }
+.md-body h3, .shared-doc .body h3 { font-size: var(--t-18); }
+.md-body h4, .shared-doc .body h4 { font-size: var(--t-16); }
+.md-body h5, .shared-doc .body h5 { font-size: var(--t-15); }
+.md-body h6, .shared-doc .body h6 { font-size: var(--t-14); color: var(--text-2); }
+
+.md-body p, .shared-doc .body p { margin: 0 0 1em; }
+.md-body strong, .shared-doc .body strong { color: var(--text); font-weight: 650; }
+.md-body a, .shared-doc .body a { color: var(--accent-text); text-decoration: none; }
+.md-body a:hover, .shared-doc .body a:hover { text-decoration: underline; }
+
+/* Lists keep their marker in the margin and nest without collapsing. */
+/* Tailwind's preflight sets `list-style: none` on every list, so markers have
+   to be asked for again — without this a rendered list had no bullets at all,
+   only indented text. `outside` keeps the marker in the gutter the padding
+   reserves, so wrapped lines align with the first one instead of running back
+   under the bullet. */
+.md-body ul, .shared-doc .body ul { list-style: disc outside; }
+.md-body ol, .shared-doc .body ol { list-style: decimal outside; }
+.md-body ul ul, .shared-doc .body ul ul { list-style-type: circle; }
+.md-body ul ul ul, .shared-doc .body ul ul ul { list-style-type: square; }
+.md-body ul, .shared-doc .body ul,
+.md-body ol, .shared-doc .body ol { margin: 0 0 1em; padding-left: 1.35em; }
+.md-body li, .shared-doc .body li { margin: 0.25em 0; }
+.md-body li > ul, .shared-doc .body li > ul,
+.md-body li > ol, .shared-doc .body li > ol { margin-bottom: 0; }
+/* GFM task lists: the checkbox takes the marker's place in the gutter rather
+   than sitting in the sentence. It must not also pull the row left of every
+   other list item — that is what made them look unaligned. */
+.md-body li:has(> input[type='checkbox']),
+.shared-doc .body li:has(> input[type='checkbox']) { list-style: none; }
+.md-body input[type='checkbox'],
+.shared-doc .body input[type='checkbox'] {
+  width: 0.95em;
+  height: 0.95em;
+  margin-left: -1.35em;
+  margin-right: 0.4em;
+  vertical-align: -0.1em;
+  accent-color: var(--accent);
+}
+
+.md-body code, .shared-doc .body code {
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+  padding: 0.12em 0.36em;
+  border-radius: var(--r-xs);
+  background: var(--bg-active);
+  color: var(--accent-text);
+}
+.md-body pre, .shared-doc .body pre {
+  margin: 0 0 1.2em;
+  padding: 13px 15px;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-raised);
+}
+/* Inside a block the code is the block; it should not also be a chip. */
+.md-body pre code, .shared-doc .body pre code {
+  padding: 0; background: none; color: var(--text);
+  font-size: var(--t-13); line-height: 1.65;
+}
+
+.md-body blockquote, .shared-doc .body blockquote {
+  margin: 0 0 1.2em;
+  padding: 2px 0 2px 16px;
+  border-left: 2px solid var(--accent);
+  color: var(--text-2);
+}
+.md-body blockquote p:last-child,
+.shared-doc .body blockquote p:last-child { margin-bottom: 0; }
+
+.md-body hr, .shared-doc .body hr {
+  border: 0; border-top: 1px solid var(--border-strong); margin: 2em 0;
+}
+
+/* Tables: the block type no previous renderer produced at all. */
+.md-body table, .shared-doc .body table {
+  width: 100%;
+  margin: 0 0 1.3em;
+  border-collapse: collapse;
+  font-size: var(--t-14);
+  display: block;
+  overflow-x: auto;
+}
+.md-body th, .shared-doc .body th,
+.md-body td, .shared-doc .body td {
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+.md-body th, .shared-doc .body th {
+  background: var(--bg-raised);
+  color: var(--text);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.md-body tbody tr:hover, .shared-doc .body tbody tr:hover { background: var(--bg-hover); }
+
+.md-body img, .shared-doc .body img {
+  max-width: 100%; height: auto; border-radius: var(--r-md); margin: 0.4em 0;
+}
+
+.md-body del, .shared-doc .body del { color: var(--text-3); }
+
+/* The line a text search matched on. Without it a result is just a title, and
+   a title does not tell you why it came back. */
+.findline {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--t-12);
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 52ch;
+}
+.sheet-in .mode {
+  font-size: var(--t-11);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-3);
+  padding: 2px 7px;
+  border-radius: var(--r-full);
+  background: var(--bg-active);
+  flex: none;
+}

@@ -4,7 +4,6 @@ import { Hash, Plus, X } from 'lucide-react';
 import { useAppDispatch } from '../store';
 import {
   acceptSuggestion,
-  createShareLink,
   deletePage,
   getPage,
   listPageSuggestions,
@@ -21,6 +20,8 @@ import { Badge } from '../components/ui/Badge';
 import { Dialog } from '../components/ui/Dialog';
 import { useToast } from '../components/ui/Toast';
 import PageActions from '../components/PageActions';
+import ShareSheet from '../sheets/ShareSheet';
+import { entryTarget } from '../api';
 import EntryMemory from '../surfaces/EntryMemory';
 import ReindexControl from '../surfaces/ReindexControl';
 import { Icon } from '../shell/Icon';
@@ -44,9 +45,7 @@ export default function WikiPage() {
   const [addingTag, setAddingTag] = useState(false);
   const [contentDraft, setContentDraft] = useState<string | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const [shareUrl, setShareUrl] = useState<string | null>(null);
-  const [shareLoading, setShareLoading] = useState(false);
-  const [shareDialogOpen, setShareDialogOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
   const [suggestions, setSuggestions] = useState<MemorySuggestion[]>([]);
   const editorRef = useRef<EditorHandle | null>(null);
   const metaSaveTimer = useRef<ReturnType<typeof setTimeout>>();
@@ -84,10 +83,10 @@ export default function WikiPage() {
       });
   }, [slug, dispatch]);
 
-  // Reset share URL when navigating to a different page
+  // Close the share sheet when navigating: it is scoped to one entry, and
+  // leaving it open would show the previous page's access on the new one.
   useEffect(() => {
-    setShareUrl(null);
-    setShareDialogOpen(false);
+    setShareOpen(false);
   }, [slug]);
 
   if (!slug) return null;
@@ -176,33 +175,13 @@ export default function WikiPage() {
     }
   }
 
-  async function handleShare() {
-    if (shareUrl) {
-      setShareDialogOpen(true);
-      return;
-    }
-    setShareLoading(true);
-    try {
-      const result = await createShareLink({ type: 'page', target_id: slugStr });
-      const fullUrl = window.location.origin + result.url;
-      setShareUrl(fullUrl);
-      setShareDialogOpen(true);
-    } catch (e) {
-      push({ kind: 'error', title: 'Share failed', description: (e as Error).message });
-    } finally {
-      setShareLoading(false);
-    }
+  // Sharing opens the sheet rather than minting a link on the spot: a link is
+  // one kind of grant, not the whole of sharing, and choosing it should be a
+  // deliberate act rather than the side effect of pressing Share.
+  function handleShare() {
+    setShareOpen(true);
   }
 
-  async function handleCopyShareUrl() {
-    if (!shareUrl) return;
-    try {
-      await navigator.clipboard.writeText(shareUrl);
-      push({ kind: 'success', title: 'Copied', description: 'Share link copied to clipboard' });
-    } catch {
-      push({ kind: 'error', title: 'Copy failed', description: 'Could not write to clipboard' });
-    }
-  }
 
   async function handleAcceptSuggestion(suggestion: MemorySuggestion) {
     try {
@@ -366,7 +345,7 @@ export default function WikiPage() {
             <PageActions
               slug={slugStr}
               disabled={!page}
-              shareLoading={shareLoading}
+              shareLoading={false}
               onSave={handleSaveNow}
               onShare={handleShare}
               onDelete={() => setDeleteOpen(true)}
@@ -421,30 +400,12 @@ export default function WikiPage() {
         }
       />
 
-      <Dialog
-        open={shareDialogOpen}
-        onOpenChange={setShareDialogOpen}
-        title="Share link"
-        footer={
-          <div className="flex items-center justify-end gap-2">
-            <Button variant="ghost" onClick={() => setShareDialogOpen(false)}>
-              Close
-            </Button>
-            <Button variant="secondary" onClick={handleCopyShareUrl} disabled={!shareUrl}>
-              Copy
-            </Button>
-          </div>
-        }
-      >
-        {shareUrl && (
-          <input
-            readOnly
-            value={shareUrl}
-            className="w-full rounded-md border border-input bg-background px-2 py-2 text-xs text-foreground font-mono truncate focus:outline-none"
-            onClick={(e) => (e.target as HTMLInputElement).select()}
-          />
-        )}
-      </Dialog>
+      <ShareSheet
+        open={shareOpen}
+        target={entryTarget(slugStr)}
+        resourceTitle={titleDraft || slugStr}
+        onClose={() => setShareOpen(false)}
+      />
     </div>
   );
 }

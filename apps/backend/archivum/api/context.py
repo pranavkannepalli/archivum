@@ -8,6 +8,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
+from archivum.code_repos import REPO_SCOPE_PREFIX, owned_repo_scopes
 from archivum.auth import CurrentUser, get_current_user
 from archivum.config import Settings, get_settings
 from archivum.db import sqlite
@@ -72,7 +73,7 @@ async def context_package(
     current_user: CurrentUser = Depends(get_current_user),
 ) -> ContextPackage:
     """Build a bounded cited subgraph for an authenticated wiki."""
-    request = _context_request_for_user(body, current_user)
+    request = await _context_request_for_user(body, current_user)
     async with sqlite.get_db() as connection:
         return await build_context_package(
             KnowledgeRepository(connection), request
@@ -134,7 +135,7 @@ def _provenance_payload(hit) -> dict[str, ExtractionMethod | str | float | None]
     }
 
 
-def _context_request_for_user(
+async def _context_request_for_user(
     body: ContextPackageRequest, current_user: CurrentUser
 ) -> ContextRequest:
     default_scope = f"wiki:{current_user.wiki_id}"
@@ -143,7 +144,15 @@ def _context_request_for_user(
     # their wiki's scope.
     if current_user.role == "owner":
         allowed_scopes.add("person:self")
+
     requested_scope = body.scope.strip() if body.scope is not None else None
+    # A repository is authorised by having been registered, since code scopes
+    # carry no wiki id. Without this an agent could ask for code context over
+    # MCP but was refused the same request over REST. Only consulted when a
+    # repository was actually asked for, so the ordinary path stays one query.
+    if requested_scope and requested_scope.startswith(REPO_SCOPE_PREFIX):
+        allowed_scopes |= await owned_repo_scopes(wiki_id=current_user.wiki_id)
+
     if requested_scope and requested_scope not in allowed_scopes:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

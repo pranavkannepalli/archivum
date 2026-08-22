@@ -225,6 +225,28 @@ def test_narrative_confirms_an_externally_cited_graph():
     assert any("cites evidence outside itself" in line for line in report.narrative)
 
 
+def test_edge_count_describes_the_graph_you_can_actually_see():
+    """An edge to a record you cannot read is not a relationship you have.
+
+    Edges are scope-filtered separately from nodes, so an edge can point out of
+    the audited scope. `build_adjacency` already drops those, meaning clusters
+    and orphans were computed on the trimmed graph while `edge_count` reported
+    the untrimmed total — the narrative claimed more connectivity than the graph
+    had, and a viewer drawing `edges` would show fewer links than the header
+    promised.
+    """
+    nodes, edges = _two_lobes()
+    visible = len(graph_audit.build_graph_report(nodes, edges).edge_list)
+
+    report = graph_audit.build_graph_report(
+        nodes, [*edges, _edge("a1", "somewhere-we-cannot-read")]
+    )
+
+    assert report.edge_count == visible, "the unreadable far end must not be counted"
+    assert len(report.edge_list) == visible
+    assert any(f"{visible} relationships" in line for line in report.narrative)
+
+
 def test_report_serialises_for_transport():
     nodes, edges = _two_lobes()
     payload = graph_audit.report_to_dict(graph_audit.build_graph_report(nodes, edges))
@@ -260,3 +282,84 @@ async def test_audit_includes_the_owner_root_even_though_it_is_out_of_scope():
     assert report.node_count == 2
     assert report.orphan_ids == ()
     assert any(SELF_ID in community.member_ids for community in report.communities)
+
+
+def _code_node(node_id: str, label: str, kind: str) -> KnowledgeObject:
+    return KnowledgeObject(
+        id=node_id,
+        kind=kind,
+        label=label,
+        scope="repo:atlas",
+        confidence=1.0,
+        extraction_method="EXTRACTED",
+        citations=[
+            Citation(
+                source_id=node_id, chunk_id="f.py",
+                span_start=None, span_end=None, quote="L1-L2",
+            )
+        ],
+        properties={},
+    )
+
+
+def _code_edge(src: str, dst: str, rel: str = "calls") -> KnowledgeRelationship:
+    return KnowledgeRelationship(
+        id=f"{src}__{rel}__{dst}",
+        src_id=src,
+        dst_id=dst,
+        rel_type=rel,
+        scope="repo:atlas",
+        confidence=1.0,
+        extraction_method="EXTRACTED",
+        citations=[
+            Citation(
+                source_id=src, chunk_id="f.py",
+                span_start=None, span_end=None, quote="L1-L2",
+            )
+        ],
+        properties={},
+    )
+
+
+def test_a_code_cluster_is_named_after_its_file_not_a_helper():
+    """"geo" beats "_normalise_inner" as the name of a cluster.
+
+    Naming by raw degree meant a private helper that happened to be called from
+    everywhere became the name of the cluster containing the module it lives in.
+    A file or a type says what the cluster *is*; a helper says what it does.
+    """
+    nodes = [
+        _code_node("repo_atlas_geo", "geo", "file"),
+        _code_node("repo_atlas_geo_haversine", "haversine", "symbol"),
+        _code_node("repo_atlas_geo_bearing", "bearing", "symbol"),
+        _code_node("repo_atlas_geo_normalise", "_normalise_inner", "symbol"),
+        _code_node("repo_atlas_view_render", "render", "symbol"),
+    ]
+    edges = [
+        _code_edge("repo_atlas_geo", "repo_atlas_geo_haversine", "defines"),
+        _code_edge("repo_atlas_geo", "repo_atlas_geo_bearing", "defines"),
+        # The helper is called from everywhere, so raw degree makes it the hub —
+        # strictly more connected than the file that declares the module.
+        _code_edge("repo_atlas_geo_haversine", "repo_atlas_geo_normalise"),
+        _code_edge("repo_atlas_geo_bearing", "repo_atlas_geo_normalise"),
+        _code_edge("repo_atlas_geo", "repo_atlas_geo_normalise", "defines"),
+        # A caller from elsewhere pushes the helper strictly past the file.
+        _code_edge("repo_atlas_view_render", "repo_atlas_geo_normalise"),
+    ]
+
+    communities = graph_audit.detect_communities(nodes, edges)
+
+    assert communities[0].label == "geo"
+
+
+def test_a_cluster_with_no_file_falls_back_to_its_hub():
+    nodes = [
+        _code_node("a", "Alpha", "page"),
+        _code_node("b", "Beta", "page"),
+        _code_node("c", "Gamma", "page"),
+    ]
+    edges = [_code_edge("a", "b", "references"), _code_edge("a", "c", "references")]
+
+    communities = graph_audit.detect_communities(nodes, edges)
+
+    assert communities[0].label == "Alpha"

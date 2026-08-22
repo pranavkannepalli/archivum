@@ -334,7 +334,11 @@ async def _register_suggestion_asset(
         scope=scope or _suggestion_scope(suggestion, current_user.wiki_id),
         status="active",
         visibility=visibility or _suggestion_visibility(suggestion),
-        summary=suggestion.rationale or _truncate(body, 160),
+        # What is remembered, not why it was queued. The rationale is boilerplate
+        # on everything distillation proposes, and it used to win over the
+        # content — so a shelf of memories all described the review process
+        # instead of themselves. It is kept, one field over.
+        summary=_truncate(body, 160) or suggestion.rationale,
         body=body,
         tags=["suggestion", suggestion.suggestion_type],
         metadata={
@@ -346,6 +350,7 @@ async def _register_suggestion_asset(
             "retention_tier": suggestion.retention_tier,
             "agent_visibility": suggestion.agent_visibility,
             "estimated_durability": suggestion.estimated_durability,
+            "rationale": suggestion.rationale,
         },
         citations=_suggestion_citations(suggestion),
         approved_by=current_user.username,

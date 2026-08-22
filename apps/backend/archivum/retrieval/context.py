@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass
+from pathlib import Path
 
 import aiosqlite
 
@@ -44,6 +45,11 @@ class ContextRequest:
     relations: list[str] | None = None
     seed_ids: list[str] | None = None
     code_connection: aiosqlite.Connection | None = None
+    # Return the cited lines, not just the citation. Off by default: a caller
+    # mapping a repository wants names, and paying for every body would blow the
+    # budget on records it is only skimming.
+    include_source: bool = False
+    max_excerpt_lines: int = 40
 
 
 async def build_context_package(
@@ -155,6 +161,8 @@ async def _build_code_context_package(
         edges,
         budget=budget,
         extra_exclusions=extra_exclusions,
+        include_source=request.include_source,
+        max_excerpt_lines=request.max_excerpt_lines,
     )
 
 
@@ -224,6 +232,8 @@ def _build_canonical_code_fallback(
         edges,
         budget=budget,
         extra_exclusions=extra_exclusions,
+        include_source=request.include_source,
+        max_excerpt_lines=request.max_excerpt_lines,
     )
 
 
@@ -381,6 +391,8 @@ def _package_from_records(
     *,
     budget: ScopeBudget | None = None,
     extra_exclusions: dict[str, str] | None = None,
+    include_source: bool = False,
+    max_excerpt_lines: int = 40,
 ) -> ContextPackage:
     node_ids, budget_exclusions = _apply_scope_budget(node_ids, objects_by_id, budget)
     kept_ids = set(node_ids)
@@ -389,7 +401,14 @@ def _package_from_records(
         for relationship in edges
         if relationship.src_id in kept_ids and relationship.dst_id in kept_ids
     ]
-    nodes = [_context_node(objects_by_id[node_id]) for node_id in node_ids]
+    nodes = [
+        _context_node(
+            objects_by_id[node_id],
+            include_source=include_source,
+            max_lines=max_excerpt_lines,
+        )
+        for node_id in node_ids
+    ]
     context_edges = [_context_edge(relationship) for relationship in edges]
     citations = _unique_citations(
         citation for node in nodes for citation in node.citations
@@ -444,7 +463,9 @@ def _bounded_unique(ids: Iterable[str], max_nodes: int) -> list[str]:
     return bounded
 
 
-def _context_node(obj: KnowledgeObject) -> ContextNode:
+def _context_node(
+    obj: KnowledgeObject, *, include_source: bool = False, max_lines: int = 40
+) -> ContextNode:
     return ContextNode(
         id=obj.id,
         label=obj.label,
@@ -453,7 +474,37 @@ def _context_node(obj: KnowledgeObject) -> ContextNode:
         extraction_method=obj.extraction_method,
         confidence=obj.confidence,
         citations=obj.citations,
+        signature=str(obj.properties.get("signature") or ""),
+        summary=str(obj.properties.get("summary") or ""),
+        excerpt=_excerpt(obj, max_lines) if include_source else "",
     )
+
+
+def _excerpt(obj: KnowledgeObject, max_lines: int) -> str:
+    """The lines a record cites, read from disk.
+
+    Best-effort by design: the file may have moved or been edited since it was
+    indexed, and a missing excerpt is a smaller problem than a failed retrieval.
+    The citation remains the authoritative answer either way.
+    """
+    if not obj.citations:
+        return ""
+    citation = obj.citations[0]
+    path = Path(citation.chunk_id or "")
+    span = (citation.quote or "").strip()
+    if not path.is_file() or not span.startswith("L"):
+        return ""
+    bounds = [part.lstrip("Ll") for part in span.split("-") if part.strip()]
+    if not all(part.isdigit() for part in bounds):
+        return ""
+    start = int(bounds[0])
+    end = int(bounds[-1]) if len(bounds) > 1 else start
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    selected = lines[max(start - 1, 0) : min(end, start - 1 + max_lines)]
+    return "\n".join(selected)
 
 
 def _context_edge(relationship: KnowledgeRelationship) -> ContextEdge:

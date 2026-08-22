@@ -3,16 +3,13 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
-from urllib.parse import urlparse
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
 from archivum.auth import CurrentUser, get_current_user, require_writer
 from archivum.config import Settings, get_settings
-from archivum.store.ingest import ingest_source
+from archivum.store.ingest import ingest_source, read_origin_bytes
 from archivum.store.models import IngestResult, Source
 from archivum.db import sqlite
 from archivum.knowledge.repository import KnowledgeRepository
@@ -61,19 +58,13 @@ class SourceDetailResponse(BaseModel):
 
 async def _read_bytes(origin_uri: str) -> bytes:
     """Fetch the raw bytes for an origin (local file path/URI or http(s))."""
-    parsed = urlparse(origin_uri)
-    if parsed.scheme in ("http", "https"):
-        async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
-            resp = await client.get(origin_uri)
-            resp.raise_for_status()
-            return resp.content
-    path = Path(parsed.path if parsed.scheme == "file" else origin_uri)
-    if not path.is_file():
+    try:
+        return await read_origin_bytes(origin_uri)
+    except FileNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"detail": f"cannot read source: {origin_uri}", "code": "unreadable_source"},
-        )
-    return path.read_bytes()
+        ) from exc
 
 
 def _to_response(result: IngestResult) -> SourceResponse:

@@ -14,7 +14,12 @@ from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import AccessToken
 from mcp.server.auth.settings import AuthSettings
 
-from archivum.capture.schema import Conversation, Turn
+from archivum.capture.schema import Conversation, ToolCall, Turn
+from archivum.code_repos import index_repo, list_repos, register_repo, scope_for
+from archivum.fixes import recall_fixes
+from archivum.sessions import record_session_work
+from archivum.summaries import global_answer_context, summarise_communities
+from archivum.store.hashing import sha256_text
 from archivum.capture.store import CaptureStore
 from archivum.config import Settings, get_settings
 from archivum.db import graph, qdrant_client as qdrant, sqlite
@@ -463,6 +468,218 @@ async def distill_source(
         "skill_id": report.skill_id,
         "skill_reason": report.skill_reason,
         "pages_written": report.pages_written,
+    }
+
+
+@mcp.tool()
+async def index_repository(
+    path: str, name: str | None = None, wiki_id: str = "default"
+) -> dict[str, Any]:
+    """Read a repository into code memory: graph, governed asset, vault pages.
+
+    Runs to completion rather than queueing, because an agent asking for this
+    is waiting on the answer — unlike the REST route, where a queue keeps the
+    wiki responsive for a person who is still using it.
+    """
+    _require_key()
+    set_trace_id(new_trace_id("mcp-index-repo"))
+    repo = await register_repo(path=Path(path), wiki_id=wiki_id, name=name)
+    indexed = await index_repo(repo, settings=settings)
+    return {
+        "scope": indexed.scope,
+        "name": indexed.name,
+        "status": indexed.status,
+        "files": indexed.files,
+        "nodes": indexed.nodes,
+        "edges": indexed.edges,
+        "pages": indexed.pages,
+    }
+
+
+@mcp.tool()
+async def list_repositories(wiki_id: str = "default") -> list[dict[str, Any]]:
+    """The repositories this vault has indexed, and how fresh each one is."""
+    _require_key()
+    return [
+        {
+            "scope": repo.scope,
+            "name": repo.name,
+            "path": repo.path,
+            "status": repo.status,
+            "nodes": repo.nodes,
+            "edges": repo.edges,
+            "indexed_at": repo.indexed_at,
+        }
+        for repo in await list_repos(wiki_id=wiki_id)
+    ]
+
+
+@mcp.tool()
+async def retrieve_code_context(
+    query: str,
+    repo: str,
+    depth: int = 2,
+    max_nodes: int = 10,
+    wiki_id: str = "default",
+) -> dict[str, Any]:
+    """Cited code context for a question, scoped to one indexed repository.
+
+    Every record comes back with the file and line it was read from, and links
+    out to any recorded decision that named it — which is the difference
+    between "here is some code" and "here is why this code is like this".
+    """
+    _require_key()
+    set_trace_id(new_trace_id("mcp-code-context"))
+    request = ContextRequest(
+        query=query,
+        scope=scope_for(repo, wiki_id=wiki_id),
+        wiki_id=wiki_id,
+        depth=max(depth, 0),
+        max_nodes=min(max(max_nodes, 1), 50),
+    )
+    async with sqlite.get_db() as connection:
+        package = await build_package(KnowledgeRepository(connection), request)
+    return package.model_dump()
+
+
+@mcp.tool()
+async def recall_fix(symptom: str, wiki_id: str = "default") -> dict[str, Any]:
+    """Have I hit this error before? Call this *before* debugging anything.
+
+    Paste the error or a description of the failure. Returns what was wrong last
+    time, what settled it, and which files changed — each cited back to the
+    session it came from. An empty answer says why it is empty rather than
+    leaving you guessing whether the store was consulted.
+    """
+    _require_key()
+    set_trace_id(new_trace_id("mcp-recall-fix"))
+    async with sqlite.get_db() as connection:
+        found = await recall_fixes(
+            KnowledgeRepository(connection), symptom=symptom, wiki_id=wiki_id
+        )
+    return {
+        "symptom": symptom,
+        "fixes": [
+            {
+                "id": fix.id,
+                "symptom": fix.properties.get("symptom", ""),
+                "diagnosis": fix.properties.get("diagnosis", ""),
+                "changed_paths": fix.properties.get("changed_paths", []),
+                "verified_by": fix.properties.get("verified_by", ""),
+                "confidence": fix.confidence,
+                "citations": [citation.model_dump() for citation in fix.citations],
+            }
+            for fix in found
+        ],
+        "reason": "" if found else "Nothing in memory matches this failure yet.",
+    }
+
+
+@mcp.tool()
+async def record_work(
+    request: str,
+    outcome: str,
+    changed_paths: list[str] | None = None,
+    verified_by: str = "",
+    wiki_id: str = "default",
+) -> dict[str, Any]:
+    """Record what you just did and why, when it is worth keeping.
+
+    Sessions are captured automatically, so this is not the only path — it is
+    the one for when you know something mattered and want it stated plainly
+    rather than inferred from a transcript. Say what was asked, what you found,
+    which files changed, and how you checked.
+    """
+    _require_key()
+    set_trace_id(new_trace_id("mcp-record-work"))
+    now = datetime.now(UTC).isoformat()
+    calls = tuple(
+        ToolCall(name="Edit", arguments={"file_path": path}, result="ok", ok=True)
+        for path in (changed_paths or [])
+    )
+    if verified_by:
+        calls = (
+            ToolCall(name="Bash", arguments={"command": verified_by}, result="failed", ok=False),
+            *calls,
+            ToolCall(name="Bash", arguments={"command": verified_by}, result="ok", ok=True),
+        )
+    conversation = Conversation(
+        session_id=f"recorded-{sha256_text(request + now)[:16]}",
+        interface="agent_report",
+        started_at=now,
+        turns=(
+            Turn(role="user", text=request),
+            Turn(role="assistant", text=outcome, tool_calls=calls),
+        ),
+    )
+    store = CaptureStore(wiki_id=wiki_id, settings=settings)
+    captured = await store.capture(conversation)
+    async with sqlite.get_db() as connection:
+        recorded = await record_session_work(
+            KnowledgeRepository(connection),
+            conversation=conversation,
+            source_id=captured.source_id,
+            wiki_id=wiki_id,
+        )
+        await connection.commit()
+    return {
+        "recorded": True,
+        "id": recorded.id,
+        "kind": recorded.properties.get("kind", "unknown"),
+        "source_id": captured.source_id,
+    }
+
+
+@mcp.tool()
+async def summarise_vault(wiki_id: str = "default") -> dict[str, Any]:
+    """Write one summary per cluster, so global questions become answerable.
+
+    Retrieval finds records that match a query. It cannot answer "what have I
+    been working on?" — no single record holds that. This summarises each
+    cluster once; `vault_themes` then reads those summaries.
+
+    Uses the configured synthesis provider, which can be a signed-in CLI, so
+    this runs on a subscription rather than per-token.
+    """
+    _require_key()
+    set_trace_id(new_trace_id("mcp-summarise"))
+    async with sqlite.get_db() as connection:
+        written = await summarise_communities(
+            KnowledgeRepository(connection),
+            wiki_id=wiki_id,
+            provider=settings.llm_synthesis_provider,
+            model=settings.llm_model,
+            owner=settings.owner_username or None,
+        )
+        await connection.commit()
+    return {"summaries": len(written), "ids": written}
+
+
+@mcp.tool()
+async def vault_themes(wiki_id: str = "default", limit: int = 20) -> dict[str, Any]:
+    """What this vault is actually about, cluster by cluster, freshest first.
+
+    Read this before answering anything broad — "what am I working on", "what do
+    I know about X overall". Each theme cites the records it was written from,
+    and says when it was written so a stale one is recognisable.
+    """
+    _require_key()
+    async with sqlite.get_db() as connection:
+        summaries = await global_answer_context(
+            KnowledgeRepository(connection), wiki_id=wiki_id, limit=limit
+        )
+    return {
+        "themes": [
+            {
+                "label": summary.label,
+                "summary": summary.properties.get("summary", ""),
+                "members": summary.properties.get("member_count", 0),
+                "written_at": summary.properties.get("written_at", ""),
+                "citations": [c.model_dump() for c in summary.citations[:5]],
+            }
+            for summary in summaries
+        ],
+        "reason": "" if summaries else "No summaries yet — run summarise_vault first.",
     }
 
 

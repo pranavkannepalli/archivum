@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { renderToString } from 'react-dom/server';
 import { StaticRouter } from 'react-router-dom/server';
+import fs from 'node:fs';
+import path from 'node:path';
 import { AppProvider } from '../store';
 import { ToastProvider } from '../components/ui/Toast';
 import SelfSurface from './SelfSurface';
@@ -38,6 +40,15 @@ function render(node: React.ReactNode, location = '/me') {
 describe('the self surface', () => {
   it('waits on the profile rather than showing an empty shell', () => {
     expect(render(<SelfSurface />)).toContain('Loading your profile');
+  });
+
+  it('asks for memory by owner, not by scope', () => {
+    // `person:self` is the owner of every asset and the scope of none, so
+    // filtering on scope guaranteed an empty section under a non-zero count.
+    const source = fs.readFileSync(path.resolve('src/surfaces/SelfSurface.tsx'), 'utf8');
+
+    expect(source).toContain("listMemoryAssets({ owner: SELF_OWNER })");
+    expect(source).not.toContain('scope: SELF_SCOPE');
   });
 });
 

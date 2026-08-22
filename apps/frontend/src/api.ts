@@ -176,6 +176,27 @@ export async function reindexPage(slug: string): Promise<ReindexResult> {
   return res.json();
 }
 
+export interface VaultReindexReport {
+  pages: number;
+  actions: Record<string, number>;
+  degraded: string[];
+}
+
+/**
+ * Re-read the whole vault from disk.
+ *
+ * Every write already indexes itself and the watcher catches external edits, so
+ * this is the repair pass: `force` rebuilds projections that were lost rather
+ * than reacting to content that changed.
+ */
+export async function reindexVault(
+  options: { force?: boolean } = {},
+): Promise<VaultReindexReport> {
+  const suffix = options.force ? '?force=true' : '';
+  const res = await apiFetch(`/api/system/reindex${suffix}`, { method: 'POST' });
+  return res.json();
+}
+
 export interface DerivedRecord {
   id: string;
   kind: string;
@@ -326,6 +347,208 @@ export async function listShareLinks(): Promise<ShareLinkInfo[]> {
 
 export async function revokeShareLink(token: string): Promise<void> {
   await apiFetch(`/api/share-links/${token}`, { method: 'DELETE' });
+}
+
+// ── Sharing ──────────────────────────────────────────────────────────────────
+//
+// A grant is the primitive: sharing with a person and sharing by link are the
+// same record with a different subject. `/api/sharing/*` is owner-side
+// management; `/api/shared/*` is what a recipient reads.
+
+export type ShareRole = 'viewer' | 'commenter';
+
+export type SharePrincipal = {
+  id: string;
+  wiki_id: string;
+  display_name: string;
+  claimed_at: string | null;
+  revoked: boolean;
+  created_at: string;
+};
+
+export type ShareGrant = {
+  id: string;
+  wiki_id: string;
+  subject_kind: 'principal' | 'link';
+  subject_id: string;
+  resource_urn: string;
+  role: ShareRole;
+  include_cited: boolean;
+  created_by: string;
+  created_at: string;
+  expires_at: string | null;
+  revoked: boolean;
+};
+
+export type ShareAccessRow = {
+  id: string;
+  resource_urn: string;
+  role: ShareRole;
+  subject_kind: 'principal' | 'link';
+  display_name: string | null;
+  created_at: string;
+  expires_at: string | null;
+};
+
+export type ShareHold = {
+  grant_id: string;
+  resource_urn: string;
+  grant_urn: string;
+  reason: string;
+  role: ShareRole;
+  display_name: string | null;
+  created_at: string;
+};
+
+/**
+ * A resource is named by kind and id, never by urn.
+ *
+ * The wiki segment of a urn is filled in server-side from the session, so the
+ * browser never has to know its own tenant id to share the page it is showing.
+ */
+export type ShareTarget = {
+  resource_kind: 'entry' | 'folder' | 'asset' | 'scope' | 'view' | 'source';
+  resource_id: string;
+};
+
+export function entryTarget(slug: string): ShareTarget {
+  return { resource_kind: 'entry', resource_id: slug };
+}
+
+export function folderTarget(path: string): ShareTarget {
+  return { resource_kind: 'folder', resource_id: path };
+}
+
+export async function createSharePrincipal(
+  displayName: string,
+): Promise<{ principal: SharePrincipal; claim_token: string; claim_url: string }> {
+  const res = await apiFetch('/api/sharing/principals', {
+    method: 'POST',
+    body: JSON.stringify({ display_name: displayName }),
+  });
+  return res.json();
+}
+
+export async function listSharePrincipals(): Promise<SharePrincipal[]> {
+  const res = await apiFetch('/api/sharing/principals');
+  return res.json();
+}
+
+export async function revokeSharePrincipal(principalId: string): Promise<void> {
+  await apiFetch(`/api/sharing/principals/${encodeURIComponent(principalId)}`, {
+    method: 'DELETE',
+  });
+}
+
+export type CreateGrantInput = ShareTarget & {
+  principal_id?: string;
+  subject_kind?: 'principal' | 'link';
+  role?: ShareRole;
+  expires_in_days?: number | null;
+  include_cited?: boolean;
+};
+
+export async function createShareGrant(input: CreateGrantInput): Promise<{
+  grant: ShareGrant;
+  share_token: string | null;
+  share_url: string | null;
+}> {
+  const res = await apiFetch('/api/sharing/grants', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+  return res.json();
+}
+
+export async function listShareAccess(target: ShareTarget): Promise<ShareAccessRow[]> {
+  const query = new URLSearchParams({
+    resource_kind: target.resource_kind,
+    resource_id: target.resource_id,
+  });
+  const res = await apiFetch(`/api/sharing/grants?${query.toString()}`);
+  return res.json();
+}
+
+export async function revokeShareGrant(grantId: string): Promise<void> {
+  await apiFetch(`/api/sharing/grants/${encodeURIComponent(grantId)}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function listShareHolds(): Promise<ShareHold[]> {
+  const res = await apiFetch('/api/sharing/holds');
+  return res.json();
+}
+
+export async function approveShareHold(
+  grantId: string,
+  resourceUrn: string,
+): Promise<void> {
+  await apiFetch(`/api/sharing/holds/${encodeURIComponent(grantId)}/approve`, {
+    method: 'POST',
+    body: JSON.stringify({ resource_urn: resourceUrn }),
+  });
+}
+
+// ── Recipient side ───────────────────────────────────────────────────────────
+
+export type SharedCitation = { title: string; urn: string | null };
+
+export type SharedListing = {
+  urn: string;
+  kind: string;
+  title: string;
+  role: ShareRole;
+};
+
+export type SharedResource = {
+  urn: string;
+  kind: string;
+  role: ShareRole;
+  title: string;
+  body: string;
+  tags: string[];
+  citations: SharedCitation[];
+  children: SharedListing[];
+  may_comment: boolean;
+  shared_by_inheritance: string | null;
+};
+
+export async function claimShare(
+  claimToken: string,
+): Promise<{ principal_id: string; display_name: string; wiki_id: string }> {
+  const res = await apiFetch('/api/shared/claim', {
+    method: 'POST',
+    body: JSON.stringify({ claim_token: claimToken }),
+  });
+  return res.json();
+}
+
+export async function openShareLink(token: string): Promise<SharedResource> {
+  const res = await apiFetch(`/api/shared/by-token/${encodeURIComponent(token)}`);
+  return res.json();
+}
+
+export async function getSharedResource(
+  urn: string,
+  token?: string,
+): Promise<SharedResource> {
+  const query = new URLSearchParams({ urn });
+  if (token) query.set('token', token);
+  const res = await apiFetch(`/api/shared/resource?${query.toString()}`);
+  return res.json();
+}
+
+export async function listSharedWithMe(): Promise<SharedListing[]> {
+  const res = await apiFetch('/api/shared');
+  return res.json();
+}
+
+export async function commentOnShare(urn: string, text: string): Promise<void> {
+  await apiFetch('/api/shared/comment', {
+    method: 'POST',
+    body: JSON.stringify({ urn, text }),
+  });
 }
 
 export type PublicPageSummary = {
@@ -715,6 +938,9 @@ export async function listMemoryAssets(
     asset_type?: string;
     layer?: string;
     status?: string;
+    /** Whose memory this is — `person:self` for everything the owner owns. */
+    owner?: string;
+    /** Which vault or repo it belongs to, e.g. `wiki:default`. */
     scope?: string;
     page_slug?: string;
   } = {},
@@ -723,6 +949,7 @@ export async function listMemoryAssets(
   if (filters.asset_type) params.set('asset_type', filters.asset_type);
   if (filters.layer) params.set('layer', filters.layer);
   if (filters.status) params.set('status', filters.status);
+  if (filters.owner) params.set('owner', filters.owner);
   if (filters.scope) params.set('scope', filters.scope);
   if (filters.page_slug) params.set('page_slug', filters.page_slug);
   const suffix = params.toString() ? `?${params.toString()}` : '';
@@ -938,6 +1165,11 @@ export type GraphReport = {
   communities: GraphCommunity[];
   surprising_links: SurprisingLink[];
   narrative: string[];
+  /** Name and kind per record, so the picture can be drawn from this alone. */
+  node_labels: Record<string, string>;
+  node_kinds: Record<string, string>;
+  /** The relationships analysed. Without these you can only draw a layout. */
+  edges: { source: string; target: string; relation: string; extraction_method: string }[];
 };
 
 export type GraphPathResult = {
@@ -949,8 +1181,125 @@ export type GraphPathResult = {
   reason: string | null;
 };
 
-export async function getGraphAudit(surpriseLimit = 10): Promise<GraphReport> {
-  const res = await apiFetch(`/api/graph/audit?surprise_limit=${surpriseLimit}`);
+/**
+ * Audit a knowledge graph.
+ *
+ * `scope` points the same deterministic analysis at something other than the
+ * wiki — an indexed repository, for instance. The algorithms never cared which
+ * graph they were given; only the routes did.
+ */
+export async function getGraphAudit(
+  surpriseLimit = 10,
+  scope?: string,
+): Promise<GraphReport> {
+  const suffix = scope ? `&scope=${encodeURIComponent(scope)}` : '';
+  const res = await apiFetch(`/api/graph/audit?surprise_limit=${surpriseLimit}${suffix}`);
+  return res.json();
+}
+
+export interface VaultHit {
+  slug: string;
+  title: string;
+  excerpt: string;
+  score: number;
+}
+
+/**
+ * Search the vault properly — semantic, keyword and bounded graph together.
+ *
+ * The Everything box used to filter titles client-side, which meant anything
+ * you could not name was effectively lost, while the embeddings and the hybrid
+ * endpoint sat unused.
+ */
+export interface FoundPage {
+  slug: string;
+  title: string;
+  excerpt: string;
+  in_title: boolean;
+}
+
+/**
+ * Literal text search: names and bodies, straight off the FTS index.
+ *
+ * Separate from `searchVault`, which is semantic and will decline a weak match.
+ * That is right for "things about retrieval" and wrong for "the file where I
+ * wrote that string".
+ */
+export async function findPages(query: string, limit = 30): Promise<FoundPage[]> {
+  const res = await apiFetch(
+    `/api/find?q=${encodeURIComponent(query)}&limit=${limit}`,
+  );
+  return res.json();
+}
+
+export async function searchVault(query: string, limit = 20): Promise<VaultHit[]> {
+  const res = await apiFetch(
+    `/api/search?q=${encodeURIComponent(query)}&limit=${limit}`,
+  );
+  return res.json();
+}
+
+export interface OpenTask {
+  text: string;
+  slug: string;
+  page_title: string;
+  line: number;
+}
+
+/** Check or uncheck a task. Edits the line in the page, which owns the truth. */
+export async function toggleTask(input: {
+  slug: string;
+  line: number;
+  done: boolean;
+}): Promise<OpenTask> {
+  const res = await apiFetch('/api/tasks/toggle', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+  return res.json();
+}
+
+export interface CodeRepo {
+  scope: string;
+  name: string;
+  path: string;
+  status: 'pending' | 'indexing' | 'ready' | 'error';
+  files: number;
+  nodes: number;
+  edges: number;
+  pages: number;
+  error: string | null;
+  indexed_at: string | null;
+}
+
+/** The repositories this vault has indexed into code memory. */
+export async function listRepos(): Promise<CodeRepo[]> {
+  const res = await apiFetch('/api/repos');
+  return res.json();
+}
+
+/**
+ * Point Archivum at a repository on the machine it is running on.
+ *
+ * Indexing is queued, so this comes back `pending` and the counts fill in once
+ * the worker has read the repo.
+ */
+export async function registerRepo(input: {
+  path: string;
+  name?: string;
+}): Promise<CodeRepo> {
+  const res = await apiFetch('/api/repos', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+  return res.json();
+}
+
+/** Queue an already-registered repository to be read again. */
+export async function reindexRepo(name: string): Promise<CodeRepo> {
+  const res = await apiFetch(`/api/repos/${encodeSlugPath(name)}/reindex`, {
+    method: 'POST',
+  });
   return res.json();
 }
 
@@ -1292,7 +1641,9 @@ export type ActivityKind =
   | 'page_edited'
   | 'suggestion'
   | 'ingest'
-  | 'memory';
+  | 'memory'
+  | 'session'
+  | 'fix';
 
 export type ActivityActor = 'you' | 'agent' | 'system';
 
@@ -1312,6 +1663,8 @@ export type ActivityFeed = {
   items: ActivityItem[];
   next_before: string | null;
   pending_review: number;
+  /** Still outstanding. A standing list, not part of the timeline. */
+  open_tasks: OpenTask[];
 };
 
 export async function getActivity(

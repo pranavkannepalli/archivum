@@ -3,12 +3,13 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
 
 from archivum.archgraph.cache import load_cached, save_cached
 from archivum.archgraph.extract import extract_file
-from archivum.archgraph.extractors.base import _file_namespace
+from archivum.archgraph.extractors.base import _file_namespace, _make_id
 from archivum.archgraph.mapper import (
     CandidateArtifact,
     CandidateEntity,
@@ -20,12 +21,22 @@ from archivum.archgraph.mapper import (
 )
 from archivum.archgraph.models import Extraction
 from archivum.archgraph.registry import CODE_SUFFIXES
-from archivum.archgraph.repo import collect_files, repo_artifacts, snapshot_repo
+from archivum.archgraph.repo import (
+    changed_line_ranges,
+    collect_files,
+    repo_artifacts,
+    snapshot_repo,
+)
 from archivum.archgraph.resolve import resolve_cross_file
 from archivum.archgraph.cross_repo import resolve_cross_repo
 from archivum.archgraph.bridge import bridge_evidence
 from archivum.archgraph.lexical import build_lexical_index
 from archivum.knowledge.repository import KnowledgeRepository
+
+
+# Deriving cross-repo and evidence links means reading the whole store, so the
+# scan is bounded the same way the graph audit and projection rebuild are.
+_L1_SCAN_LIMIT = 100_000
 
 
 @dataclass
@@ -37,40 +48,39 @@ class IngestReport:
     cache_hits: int
 
 
-class _L1View:
-    """Minimal L1 read API built from accepted entity/artifact candidates.
+class _KnowledgeL1View:
+    """L1 read view over everything the vault knows, not just this run.
 
-    Note on evidence bridging: code candidates carry no free-text body, so the
-    ``text`` field is passed through from the candidate when present and is
-    otherwise empty. ``bridge_evidence`` matches on that text, so in a code-only
-    ingest it correctly emits nothing — bridging is *evidence-gated*: it fires
-    only once L1 also holds PR/conversation/deploy objects (with text) from
-    PER-316 capture / PER-317. That is by design, not a silent no-op.
+    This used to be built from the candidates of the ingest in progress, which
+    made both derived resolvers unreachable. `resolve_cross_repo` compares
+    scopes and one run only ever has one, so it could never emit; and
+    `bridge_evidence` looks for conversation evidence, which a code-only run by
+    definition does not contain. The comment here previously called that
+    "evidence-gated" — but the gate could not open, because the view was reading
+    from the wrong place rather than waiting on data that had not arrived.
+
+    Distilled memory atoms are presented as conversation evidence: they are the
+    owner's own recorded statements, already cited and already reviewed, which
+    makes them the honest thing to link a symbol's existence to.
     """
 
-    def __init__(self, candidates: list[object]) -> None:
+    def __init__(self, objects: list[Any]) -> None:
         self._objects: list[dict] = []
-        for c in candidates:
-            if isinstance(c, (CandidateEntity, CandidateArtifact)):
-                self._objects.append(
-                    {
-                        "id": c.id,
-                        "kind": c.kind,
-                        "scope": c.scope,
-                        "label": c.name,
-                        "text": getattr(c, "text", ""),
-                    }
-                )
-            elif isinstance(c, CandidateRelationship):
-                self._objects.append(
-                    {
-                        "id": c.id,
-                        "kind": c.rel_type,
-                        "scope": c.scope,
-                        "label": c.rel_type,
-                        "text": "",
-                    }
-                )
+        for object_ in objects:
+            kind = object_.kind
+            text = ""
+            if kind == "memory_atom":
+                kind = "conversation"
+                text = str(object_.properties.get("text") or object_.label or "")
+            self._objects.append(
+                {
+                    "id": object_.id,
+                    "kind": kind,
+                    "scope": object_.scope,
+                    "label": object_.label,
+                    "text": text,
+                }
+            )
 
     async def list_objects(self, kind: str | None = None, scope: str | None = None) -> list[dict]:
         return [
@@ -79,6 +89,62 @@ class _L1View:
             if (kind is None or o.get("kind") == kind)
             and (scope is None or o.get("scope") == scope)
         ]
+
+
+def _span_bounds(span: str) -> tuple[int, int] | None:
+    """(start, end) line numbers from an `L12-L18` span."""
+    parts = [part.strip().lstrip("Ll") for part in span.split("-") if part.strip()]
+    if not parts or not all(part.isdigit() for part in parts):
+        return None
+    return int(parts[0]), int(parts[-1])
+
+
+def _changed_in_edges(
+    root: Path, snap, extractions: list[Extraction], *, scope: str
+) -> list[CandidateRelationship]:
+    """Link the commit to every symbol whose lines it touched."""
+    ranges = changed_line_ranges(root, snap.commit_sha)
+    if not ranges:
+        return []
+
+    commit_id = _make_id(snap.repo_id, snap.commit_sha)
+    edges: list[CandidateRelationship] = []
+    seen: set[str] = set()
+    for extraction in extractions:
+        for node in extraction.nodes:
+            if node.kind not in ("symbol", "type") or node.id in seen:
+                continue
+            try:
+                relative = Path(node.source_file).resolve().relative_to(root.resolve())
+            except (ValueError, OSError):
+                continue
+            touched = ranges.get(relative.as_posix())
+            bounds = _span_bounds(node.source_location)
+            if not touched or bounds is None:
+                continue
+            start, end = bounds
+            if not any(hunk_end >= start and hunk_start <= end for hunk_start, hunk_end in touched):
+                continue
+            seen.add(node.id)
+            edges.append(
+                CandidateRelationship(
+                    id=_make_id(node.id, commit_id, "changed_in"),
+                    src_id=node.id,
+                    dst_id=commit_id,
+                    rel_type="changed_in",
+                    scope=scope,
+                    confidence=1.0,
+                    extraction_method="EXTRACTED",
+                    provenance=[
+                        Provenance(
+                            chunk_id=node.source_file,
+                            span=node.source_location,
+                            extraction_method="EXTRACTED",
+                        )
+                    ],
+                )
+            )
+    return edges
 
 
 def changed_files(root: Path, since_sha: str | None) -> tuple[list[Path], list[Path]]:
@@ -168,7 +234,17 @@ async def ingest_repo(
     lexical_conn: aiosqlite.Connection,
     update: bool = False,
     since_sha: str | None = None,
+    related_scopes: set[str] | None = None,
 ) -> IngestReport:
+    """Read a repository into canonical knowledge.
+
+    `related_scopes` bounds which other scopes may take part in derived links.
+    Bridging deliberately reads beyond this run so a symbol can find a decision
+    recorded months ago — but unbounded, that same sweep would manufacture a
+    link from this repository into another vault's memory. Callers pass the
+    repository's own scope plus the vault that owns it; omitting it means no
+    other scope participates.
+    """
     # Step 1: snapshot repo and collect repo-level artifacts
     snap = snapshot_repo(root)
     repo_cands = repo_artifacts(snap, scope=scope)
@@ -216,6 +292,13 @@ async def ingest_repo(
         mapped = map_extraction(ext, scope=scope, chunk_id=chunk_id)
         all_candidates.extend(mapped)
 
+    # Step 4b: attribute the commit to the symbols whose lines it changed.
+    # Attributing it to every symbol in a touched file would say a module moved;
+    # this says which function did, which is what "what changed and why" needs.
+    all_candidates.extend(
+        _changed_in_edges(root, snap, all_extractions, scope=scope)
+    )
+
     # Step 5 (incremental only): prune candidates from deleted files and remove
     # stale canonical records from every touched file before current upserts.
     if update and deleted:
@@ -230,6 +313,25 @@ async def ingest_repo(
         )
 
     # Step 6: persist canonical knowledge records and their provenance.
+    #
+    # A call site knows only the bare name it called, so an edge whose target
+    # could not be resolved to a real symbol points at nothing. Those used to be
+    # stored anyway, which inflated the edge count and left the graph full of
+    # pointers to records that do not exist.
+    known_ids = {
+        candidate.id
+        for candidate in all_candidates
+        if isinstance(candidate, (CandidateEntity, CandidateArtifact))
+    }
+    resolved_candidates: list[object] = []
+    for candidate in all_candidates:
+        if isinstance(candidate, CandidateRelationship) and not (
+            candidate.src_id in known_ids and candidate.dst_id in known_ids
+        ):
+            continue
+        resolved_candidates.append(candidate)
+    all_candidates = resolved_candidates
+
     for candidate in all_candidates:
         if isinstance(candidate, (CandidateEntity, CandidateArtifact)):
             await knowledge.upsert_object(candidate_to_knowledge_object(candidate))
@@ -237,8 +339,14 @@ async def ingest_repo(
             await knowledge.upsert_relationship(candidate_to_knowledge_relationship(candidate))
     accepted = all_candidates
 
-    # Step 7: build a read view from this run and resolve derived relationships.
-    l1_view = _L1View(accepted)
+    # Step 7: resolve derived relationships against everything the vault knows.
+    # Reading the whole store rather than this run is what lets a symbol link to
+    # a decision recorded months ago, and lets two repos recognise a shared type.
+    canonical_objects = await knowledge.list_objects(limit=_L1_SCAN_LIMIT)
+    linkable_scopes = {scope, *(related_scopes or set())}
+    l1_view = _KnowledgeL1View(
+        [object_ for object_ in canonical_objects if object_.scope in linkable_scopes]
+    )
     cross_repo_rels = await resolve_cross_repo(l1_view)
     bridge_rels = await bridge_evidence(l1_view)
     extra_rels: list[object] = [*cross_repo_rels, *bridge_rels]
@@ -250,7 +358,6 @@ async def ingest_repo(
     # Step 8: rebuild lexical index from canonical code objects in this scope.
     # Incremental runs only extract touched files, but lexical is a full
     # projection and its builder clears existing rows before repopulating.
-    canonical_objects = await knowledge.list_objects(scope=scope, limit=100_000)
     code_nodes = [
         (object_.id, object_.label)
         for object_ in canonical_objects
@@ -258,15 +365,14 @@ async def ingest_repo(
     ]
     await build_lexical_index(lexical_conn, code_nodes)
 
-    nodes_accepted = sum(
-        1
-        for c in accepted
-        if isinstance(c, (CandidateEntity, CandidateArtifact))
+    # Count distinct records, not candidates. Two call sites for the same callee
+    # produce two candidates and one relationship, so counting candidates made
+    # the CLI report more edges than the store actually held.
+    nodes_accepted = len(
+        {c.id for c in accepted if isinstance(c, (CandidateEntity, CandidateArtifact))}
     )
-    edges_accepted = sum(
-        1
-        for c in accepted
-        if isinstance(c, CandidateRelationship)
+    edges_accepted = len(
+        {c.id for c in accepted if isinstance(c, CandidateRelationship)}
     )
 
     return IngestReport(

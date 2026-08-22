@@ -12,16 +12,23 @@ import base64
 import json
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
-from archivum.auth import CurrentUser, get_current_user
+from archivum.auth import CurrentUser, get_current_user, require_writer
+from archivum.config import Settings, get_settings
 from archivum.db import sqlite
 from archivum.knowledge.suggestions import SuggestionRepository, wiki_scope
+from archivum.knowledge.repository import KnowledgeRepository
 from archivum.memory.registry import MemoryAssetRegistry
+from archivum.tasks import list_open_tasks, set_task_done
 from archivum.timestamps import normalise_timestamp
 
 router = APIRouter(prefix="/api", tags=["activity"])
+
+# Sessions and fixes have no time-ordered index of their own yet, so the feed
+# scans them. Bounded the same way the audit and the projection rebuild are.
+_WORK_SCAN_LIMIT = 2_000
 
 ActivityKind = Literal[
     "page_created",
@@ -29,6 +36,10 @@ ActivityKind = Literal[
     "suggestion",
     "ingest",
     "memory",
+    # Work that happened. Capture runs automatically, and capture you cannot see
+    # is hard to tell apart from no capture at all.
+    "session",
+    "fix",
 ]
 
 # Who caused the item to exist. Drives the accent edge in the stream: agent work
@@ -48,10 +59,20 @@ class ActivityItem(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class OpenTask(BaseModel):
+    text: str
+    slug: str
+    page_title: str
+    line: int
+
+
 class ActivityFeed(BaseModel):
     items: list[ActivityItem]
     next_before: str | None = None
     pending_review: int = 0
+    # Not part of the timeline — what is still outstanding. The stream is where
+    # you would look for it, so it rides along rather than needing its own trip.
+    open_tasks: list[OpenTask] = Field(default_factory=list)
 
 
 def _parse_tags(raw: object) -> list[str]:
@@ -154,6 +175,57 @@ def _ingest_items(rows: list[dict[str, Any]]) -> list[ActivityItem]:
                 },
             )
         )
+    return items
+
+
+def _work_items(objects: list[Any]) -> list[ActivityItem]:
+    """Sessions and fixes: the record of what was actually done.
+
+    Both are dated by when the work started rather than when the record was
+    written, so a session that took an hour sits where it belongs in the day.
+    """
+    items: list[ActivityItem] = []
+    for object_ in objects:
+        at = normalise_timestamp(object_.properties.get("started_at", ""))
+        if not at:
+            continue
+        if object_.kind == "session":
+            items.append(
+                ActivityItem(
+                    id=f"session:{object_.id}",
+                    kind="session",
+                    at=at,
+                    title=object_.label,
+                    summary=", ".join(
+                        str(path).rsplit("/", 1)[-1]
+                        for path in object_.properties.get("touched_paths", [])[:4]
+                    ),
+                    actor="agent",
+                    payload={
+                        "session_kind": object_.properties.get("kind", "unknown"),
+                        "touched_paths": object_.properties.get("touched_paths", []),
+                        "source_id": object_.citations[0].source_id
+                        if object_.citations
+                        else "",
+                    },
+                )
+            )
+        elif object_.kind == "fix":
+            items.append(
+                ActivityItem(
+                    id=f"fix:{object_.id}",
+                    kind="fix",
+                    at=at,
+                    title=str(object_.properties.get("symptom", "")) or object_.label,
+                    summary=str(object_.properties.get("diagnosis", "")),
+                    actor="agent",
+                    payload={
+                        "verified_by": object_.properties.get("verified_by", ""),
+                        "changed_paths": object_.properties.get("changed_paths", []),
+                        "confidence": object_.confidence,
+                    },
+                )
+            )
     return items
 
 
@@ -325,12 +397,23 @@ async def get_activity(
             before_id=asset_id,
             exclude_tied=asset_skip_tied,
         )
+        # Sessions and fixes are canonical records rather than rows, so they are
+        # read whole and filtered here; the feed's cursor still orders them.
+        knowledge = KnowledgeRepository(conn)
+        work = [
+            object_
+            for object_ in await knowledge.list_objects(
+                scope=f"wiki:{wiki_id}", limit=_WORK_SCAN_LIMIT
+            )
+            if object_.kind in ("session", "fix")
+        ]
 
     items = (
         _page_items(pages)
         + _suggestion_items(suggestions, wiki_id)
         + _ingest_items(ingests)
         + _memory_items(assets)
+        + _work_items(work)
     )
     if cursor:
         items = [item for item in items if item.at and _key(item) < cursor]
@@ -342,8 +425,61 @@ async def get_activity(
     # writes many rows in the same second.
     next_before = _encode_cursor(window[-1]) if len(items) > limit and window else None
 
+    # Only on the first page: outstanding work is a standing list, not part of
+    # the timeline, and repeating it under every scroll would be noise.
+    open_tasks = (
+        [
+            OpenTask(
+                text=task.text,
+                slug=task.slug,
+                page_title=task.page_title,
+                line=task.line,
+            )
+            for task in await list_open_tasks(wiki_id=wiki_id)
+        ]
+        if cursor is None
+        else []
+    )
+
     return ActivityFeed(
         items=window,
         next_before=next_before,
         pending_review=len(pending),
+        open_tasks=open_tasks,
+    )
+
+
+class ToggleTaskRequest(BaseModel):
+    slug: str
+    line: int
+    done: bool
+
+
+@router.post("/tasks/toggle", response_model=OpenTask)
+async def toggle_task(
+    body: ToggleTaskRequest,
+    current_user: CurrentUser = Depends(require_writer),
+    settings: Settings = Depends(get_settings),
+) -> OpenTask:
+    """Check or uncheck a task by rewriting its line in the page.
+
+    The file is the source of truth, so this edits the markdown rather than
+    updating a record beside it — which is what keeps a task the same object
+    whether you ticked it here or in your own editor.
+    """
+    try:
+        task = await set_task_done(
+            slug=body.slug,
+            line=body.line,
+            done=body.done,
+            wiki_id=current_user.wiki_id,
+            settings=settings,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"detail": str(exc), "code": "not_a_task"},
+        ) from exc
+    return OpenTask(
+        text=task.text, slug=task.slug, page_title=task.page_title, line=task.line
     )

@@ -98,3 +98,36 @@ async def test_delete_retires_review_items_that_can_never_be_accepted(settings):
     assert remaining[0].status == "expired", (
         "a suggestion against a deleted page would sit in the review queue forever"
     )
+
+
+async def test_rename_carries_the_citations_that_name_the_page(settings):
+    """A wiki-scoped suggestion says which page it is about in its citations.
+
+    Distillation files everything against `wiki:<id>`, so a rename that only
+    rewrote `target_id` left those citing a slug that no longer resolves. The
+    review item stayed pending and stopped being attributable to any page —
+    invisible in "Needs you" rather than merely misfiled.
+    """
+    async with sqlite_mod.get_db() as conn:
+        await init_suggestion_schema(conn)
+        await SuggestionRepository(conn).create_suggestion(
+            target_id="wiki:default",
+            suggestion_type="memory_atom",
+            proposed_markdown="- A constraint.",
+            proposed_objects=[],
+            citations=[
+                {"source_id": "page:topics/old", "quote": "A constraint."},
+                {"source_id": "page:topics/old-but-different", "quote": "Untouched."},
+            ],
+        )
+
+    await repoint_page(old_slug="topics/old", new_slug="filed/new", wiki_id="default")
+
+    async with sqlite_mod.get_db() as conn:
+        pending = await SuggestionRepository(conn).list_suggestions(
+            target_id="wiki:default", status=None
+        )
+    sources = [citation["source_id"] for citation in pending[0].citations]
+    assert sources == ["page:filed/new", "page:topics/old-but-different"], (
+        "the renamed page follows; a slug that merely shares a prefix does not"
+    )

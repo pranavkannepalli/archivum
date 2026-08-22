@@ -1,46 +1,13 @@
 import { useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import DOMPurify from 'dompurify';
 import { useAppDispatch } from '../store';
 import { query, createPage, createShareLink } from '../api';
 import type { Page } from '../types';
+import { renderMarkdown } from '../pages/markdown';
 import { Button } from './ui/Button';
 import { Card } from './ui/Card';
 import { Textarea } from './ui/Textarea';
 import { useToast } from './ui/Toast';
-
-// Simple markdown renderer (no external deps)
-function renderMarkdown(text: string): string {
-  return text
-    // Headings
-    .replace(/^### (.+)$/gm, '<h3 class="text-base font-semibold text-text-primary mt-4 mb-1">$1</h3>')
-    .replace(/^## (.+)$/gm, '<h2 class="text-lg font-semibold text-text-primary mt-5 mb-2">$1</h2>')
-    .replace(/^# (.+)$/gm, '<h1 class="text-xl font-bold text-text-primary mt-6 mb-2">$1</h1>')
-    // Bold + italic
-    .replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>')
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*(.+?)\*/g, '<em>$1</em>')
-    // Inline code
-    .replace(/`([^`]+)`/g, '<code class="px-1 py-0.5 rounded text-xs font-mono" style="background:#2a2a3a;color:#cba6f7">$1</code>')
-    // Code blocks
-    .replace(/```[\w]*\n([\s\S]*?)```/g, '<pre class="my-3 p-3 rounded overflow-x-auto text-xs font-mono" style="background:#2a2a3a;color:#cdd6f4"><code>$1</code></pre>')
-    // Blockquotes
-    .replace(/^> (.+)$/gm, '<blockquote class="border-l-2 pl-3 my-2 text-text-secondary italic" style="border-color:#4B91F1">$1</blockquote>')
-    // Unordered lists
-    .replace(/^[-*] (.+)$/gm, '<li class="ml-4 list-disc text-text-secondary">$1</li>')
-    // Ordered lists
-    .replace(/^\d+\. (.+)$/gm, '<li class="ml-4 list-decimal text-text-secondary">$1</li>')
-    // Links
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" class="text-accent hover:underline" target="_blank" rel="noopener">$1</a>')
-    // Horizontal rule
-    .replace(/^---$/gm, '<hr class="my-4" style="border-color:#3a3a4a">')
-    // Paragraphs (double newline)
-    .replace(/\n\n/g, '</p><p class="mb-3 text-text-secondary leading-relaxed">')
-    // Wrap in paragraph
-    .replace(/^(?!<)(.+)$/gm, (line) =>
-      line.startsWith('<') ? line : line,
-    );
-}
 
 export default function QueryPanel() {
   const dispatch = useAppDispatch();
@@ -196,15 +163,8 @@ export default function QueryPanel() {
 
             {/* Answer content */}
             <div
-              className="prose-custom text-text-secondary leading-relaxed"
-              dangerouslySetInnerHTML={{
-                __html: DOMPurify.sanitize(
-                  `<p class="mb-3 text-text-secondary leading-relaxed">${renderMarkdown(answer)}</p>`,
-                  {
-                    ALLOWED_ATTR: ['class', 'style', 'href', 'target', 'rel'],
-                  },
-                ),
-              }}
+              className="md-body"
+              dangerouslySetInnerHTML={{ __html: renderMarkdown(answer) }}
             />
 
             {/* Actions */}
