@@ -1,4 +1,4 @@
-import type { Entry, VaultHit } from '../api';
+import type { Entry, FoundPage, VaultHit } from '../api';
 
 /**
  * What the list shows while a search is active.
@@ -13,7 +13,28 @@ import type { Entry, VaultHit } from '../api';
  * Now the hits decide membership and order, and the loaded entry is used only
  * to fill in what the search result does not carry.
  */
-export function searchResults(all: Entry[], hits: VaultHit[]): Entry[] {
+export function searchResults(
+  all: Entry[],
+  hits: VaultHit[],
+  found: FoundPage[] = [],
+): Entry[] {
+  // Literal matches lead. Semantic search decides what a page is *about* and
+  // will decline a weak match — correct for "things about retrieval", wrong
+  // when you typed a file name or a string you know is in a page, which used to
+  // come back empty.
+  const ordered: VaultHit[] = [
+    ...found.map((hit) => ({
+      slug: hit.slug,
+      title: hit.title,
+      excerpt: hit.excerpt,
+      score: 1,
+    })),
+    ...hits,
+  ];
+  return rank(all, ordered);
+}
+
+function rank(all: Entry[], hits: VaultHit[]): Entry[] {
   const known = new Map(all.filter((entry) => entry.slug).map((entry) => [entry.slug!, entry]));
   const seen = new Set<string>();
   const results: Entry[] = [];

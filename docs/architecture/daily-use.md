@@ -34,13 +34,29 @@ a todo list is something you keep, not something the code graph writes for you.
 
 ## Finding things
 
-The search box on **Everything** runs the hybrid endpoint — semantic, keyword and
-bounded graph — debounced, keeping the engine's ranking. It used to filter titles
-in the browser, which meant anything you could not name by title was effectively
-lost while the embeddings sat unused. A failed search falls back to title
-matching rather than showing nothing.
+Three different questions, which used to be hard to tell apart:
 
-⌘K is **Ask**: cited answers over the vault. Different gesture, different job.
+| | What it does | Cost |
+|---|---|---|
+| **Find text** (`⌘P`) | Literal match on page names *and page bodies*, straight off the SQLite FTS index. Shows the line it matched. | Instant, nothing leaves the machine |
+| **Search** (the box on Everything) | Both of the above, plus semantic: pages that are *about* what you typed | ~100ms |
+| **Ask** (`⌘K`) | Sends a question to a model, streams back an answer citing the pages it read | Seconds, uses your CLI subscription |
+
+The distinction matters because they fail differently. Semantic search declines
+a weak match rather than returning a page of near-misses — right for "things
+about retrieval", wrong for "the file where I wrote that string", which is
+exactly when it would return nothing. So literal results always lead, and the
+box runs both channels.
+
+Find used to match titles only, and only against the pages already loaded in
+the browser — so text inside a file was unreachable from anywhere in the app,
+even though the FTS index over title, content and tags has been there from the
+beginning, kept current by triggers. It was only ever read as one channel inside
+the ranker, where the relevance floor could discard it.
+
+Both `Find text` and `Ask a question` are buttons in the sidebar. Find was
+previously reachable only by knowing `⌘P`, which meant that in practice it was
+not in the product.
 
 ## Where things go
 

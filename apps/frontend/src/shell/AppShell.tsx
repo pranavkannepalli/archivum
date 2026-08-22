@@ -180,9 +180,17 @@ export default function AppShell() {
               Everything
               <span className="n">{pages.length || ''}</span>
             </button>
+            {/* Two different things, so two buttons. Find was previously
+                reachable only by knowing ⌘P, which meant text search inside
+                pages was, in practice, not in the product. */}
+            <button type="button" onClick={() => openSheet('file')}>
+              <Icon name="search" />
+              Find text
+              <span className="kbd" style={{ marginLeft: 'auto' }}>⌘P</span>
+            </button>
             <button type="button" onClick={() => openSheet('ask')}>
               <Icon name="sparkles" />
-              Ask
+              Ask a question
               <span className="kbd" style={{ marginLeft: 'auto' }}>⌘K</span>
             </button>
             <button type="button" onClick={openToday}>

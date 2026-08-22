@@ -5,8 +5,24 @@ from fastapi import APIRouter, Depends, Query
 from archivum.auth import CurrentUser, get_current_user
 from archivum.config import Settings, get_settings
 from archivum.retrieval.hybrid import hybrid_retrieve
+from archivum.search.find import find_pages
 
 router = APIRouter(prefix="/api", tags=["search"])
+
+
+@router.get("/find")
+async def find(
+    q: str = Query(..., min_length=1),
+    limit: int = Query(30, ge=1, le=100),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> list[dict]:
+    """Literal text search over page names and bodies.
+
+    Deliberately not `/search`: that one is semantic and will decline a weak
+    match, which is right for "find me things about X" and wrong for "I know
+    this string is in a file". Index-backed, no embeddings, no model.
+    """
+    return await find_pages(q, wiki_id=current_user.wiki_id, limit=limit)
 
 
 @router.get("/search")

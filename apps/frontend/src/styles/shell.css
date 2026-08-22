@@ -1246,3 +1246,26 @@ textarea.inp { height: auto; padding: 11px 14px; line-height: 1.6; resize: none;
 }
 
 .md-body del, .shared-doc .body del { color: var(--text-3); }
+
+/* The line a text search matched on. Without it a result is just a title, and
+   a title does not tell you why it came back. */
+.findline {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--t-12);
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 52ch;
+}
+.sheet-in .mode {
+  font-size: var(--t-11);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-3);
+  padding: 2px 7px;
+  border-radius: var(--r-full);
+  background: var(--bg-active);
+  flex: none;
+}

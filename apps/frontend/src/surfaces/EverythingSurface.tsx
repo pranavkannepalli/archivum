@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { listEntries, searchVault, type Entry, type EntryList, type VaultHit } from '../api';
+import {
+  findPages,
+  listEntries,
+  searchVault,
+  type Entry,
+  type EntryList,
+  type FoundPage,
+  type VaultHit,
+} from '../api';
 import { searchResults } from './searchResults';
 import { Icon } from '../shell/Icon';
 import { cn } from '../lib/cn';
@@ -89,17 +97,27 @@ export default function EverythingSurface() {
   // which meant anything you could not name was effectively lost — while the
   // embeddings and the hybrid endpoint sat unused behind it.
   const [hits, setHits] = useState<VaultHit[] | null>(null);
+  const [found, setFound] = useState<FoundPage[]>([]);
 
   useEffect(() => {
     const needle = search.trim();
     if (!needle) {
       setHits(null);
+      setFound([]);
       return;
     }
     let cancelled = false;
     const id = window.setTimeout(() => {
+      // Two channels, because they answer different questions. Literal text
+      // search is an index lookup and always finds what is actually written;
+      // semantic search finds pages that are *about* it and declines weak
+      // matches. Running only the second meant typing a file name could return
+      // nothing at all.
+      findPages(needle)
+        .then((rows) => !cancelled && setFound(rows))
+        .catch(() => !cancelled && setFound([]));
       searchVault(needle)
-        .then((found) => !cancelled && setHits(found))
+        .then((rows) => !cancelled && setHits(rows))
         // A failed search falls back to matching titles rather than showing
         // nothing: degraded search beats no search.
         .catch(() => !cancelled && setHits(null));
@@ -117,13 +135,13 @@ export default function EverythingSurface() {
     // The engine ranked these against the whole vault, so they decide both
     // membership and order. Filtering them through the loaded page dropped
     // anything not already on screen.
-    if (hits) return searchResults(all, hits);
+    if (hits || found.length) return searchResults(all, hits ?? [], found);
     return all.filter(
       (entry) =>
         entry.title.toLowerCase().includes(needle) ||
         (entry.slug ?? '').toLowerCase().includes(needle),
     );
-  }, [data, search, hits]);
+  }, [data, search, hits, found]);
 
   const columns = useMemo(() => columnsFor(entries, path), [entries, path]);
 
@@ -154,7 +172,7 @@ export default function EverythingSurface() {
             <Icon name="search" size={18} />
             <input
               value={search}
-              placeholder="Search everything"
+              placeholder="Search names and page text…"
               onChange={(event) => setSearch(event.target.value)}
             />
           </div>

@@ -1,17 +1,27 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { query } from '../api';
+import { findPages, query, type FoundPage } from '../api';
 import type { Page } from '../types';
 import { Icon } from '../shell/Icon';
 import { cn } from '../lib/cn';
 
 /**
- * One sheet, two modes.
+ * One sheet, two jobs that are easy to confuse.
  *
- * `file` (⌘P) jumps to a page by path. `ask` (⌘K) answers from the vault with
- * citations. They share a surface because they answer the same impulse — "get
- * me to the thing" — and separating them into two overlays would double the
- * chrome for no gain.
+ * **Find** (⌘P) is literal and instant: it matches page names *and page text*
+ * against the FTS index, and shows the line it matched on. Nothing is sent
+ * anywhere. Use it when you know the words.
+ *
+ * **Ask** (⌘K) sends a question to a model and streams back an answer with
+ * citations into the pages it used. It takes seconds, because something is
+ * reading for you.
+ *
+ * They share a surface because they answer the same impulse — "get me to the
+ * thing" — but each one is now labelled with what it does and what it costs,
+ * because a box that sometimes greps and sometimes calls a model is a box you
+ * cannot predict. Find used to match titles only, and only against the pages
+ * already loaded in the browser, which meant text inside a file was unreachable
+ * from anywhere in the app.
  */
 
 type Mode = 'ask' | 'file';
@@ -49,7 +59,9 @@ export default function AskSheet({
     return () => window.clearTimeout(id);
   }, [open, mode]);
 
-  const matches = useMemo(() => {
+  // Local title matching answers immediately from what is already loaded, so
+  // the list never goes blank while the index round-trips.
+  const localMatches = useMemo(() => {
     const needle = text.trim().toLowerCase();
     const ranked = needle
       ? pages.filter(
@@ -60,6 +72,50 @@ export default function AskSheet({
       : pages;
     return ranked.slice(0, 40);
   }, [pages, text]);
+
+  const [found, setFound] = useState<FoundPage[] | null>(null);
+
+  useEffect(() => {
+    if (mode !== 'file') return;
+    const needle = text.trim();
+    if (!needle) {
+      setFound(null);
+      return;
+    }
+    let cancelled = false;
+    // Short: this is an index lookup, not a model call. Waiting on it should
+    // not be perceptible.
+    const id = window.setTimeout(() => {
+      findPages(needle)
+        .then((hits) => !cancelled && setFound(hits))
+        .catch(() => !cancelled && setFound(null));
+    }, 90);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(id);
+    };
+  }, [mode, text]);
+
+  // Names first — if you typed a file name you want the file, not a page that
+  // mentions it — then everything the text search turned up.
+  const matches = useMemo(() => {
+    if (!found) return localMatches;
+    const byName = new Map(localMatches.map((page) => [page.slug, page]));
+    const rest = found
+      .filter((hit) => !byName.has(hit.slug))
+      .map((hit) => ({
+        slug: hit.slug,
+        title: hit.title,
+        content: hit.excerpt,
+        tags: [],
+      })) as unknown as Page[];
+    return [...localMatches, ...rest].slice(0, 40);
+  }, [localMatches, found]);
+
+  const excerptFor = useMemo(() => {
+    const index = new Map((found ?? []).map((hit) => [hit.slug, hit.excerpt]));
+    return (slug: string) => index.get(slug) ?? '';
+  }, [found]);
 
   useEffect(() => {
     setCursor(0);
@@ -101,14 +157,16 @@ export default function AskSheet({
     >
       <div className="sheet" role="dialog" aria-label={mode === 'ask' ? 'Ask Archivum' : 'Go to file'}>
         <div className="sheet-in">
-          <Icon name={mode === 'ask' ? 'sparkles' : 'folder'} size={18} />
-          {mode === 'file' && <span className="mode">Go to file</span>}
+          <Icon name={mode === 'ask' ? 'sparkles' : 'search'} size={18} />
+          <span className="mode">{mode === 'ask' ? 'Ask' : 'Find'}</span>
           <input
             ref={inputRef}
             value={text}
             autoComplete="off"
             placeholder={
-              mode === 'ask' ? 'Ask anything about your vault…' : 'Type a file or folder name…'
+              mode === 'ask'
+                ? 'Ask a question — an assistant reads your vault and answers with sources'
+                : 'Find text in any page, or a page by name'
             }
             onChange={(event) => setText(event.target.value)}
             onKeyDown={(event) => {
@@ -130,7 +188,7 @@ export default function AskSheet({
             className="btn btn-sm"
             onClick={() => onModeChange(mode === 'ask' ? 'file' : 'ask')}
           >
-            {mode === 'ask' ? 'Go to file' : 'Ask instead'}
+            {mode === 'ask' ? 'Find text instead' : 'Ask a question instead'}
           </button>
         </div>
 
@@ -158,7 +216,7 @@ export default function AskSheet({
           <div className="sheet-list">
             {matches.length === 0 ? (
               <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-3)', fontSize: 'var(--t-13)' }}>
-                Nothing matches.
+                No page name or text matches that.
               </div>
             ) : (
               matches.map((page, index) => (
@@ -170,7 +228,12 @@ export default function AskSheet({
                   onClick={() => openMatch(page)}
                 >
                   <Icon name="file" />
-                  <span>{page.title || page.slug}</span>
+                  <span>
+                    {page.title || page.slug}
+                    {excerptFor(page.slug) && (
+                      <span className="findline">{excerptFor(page.slug)}</span>
+                    )}
+                  </span>
                   <span className="pathsub">{page.slug}</span>
                 </button>
               ))
@@ -186,7 +249,15 @@ export default function AskSheet({
             <span className="kbd">↵</span> {mode === 'ask' ? 'ask' : 'open'}
           </span>
           <span>
-            <span className="kbd">⌘P</span> go to file
+            {mode === 'ask' ? (
+              <>
+                <span className="kbd">⌘P</span> find text instead — instant, no model
+              </>
+            ) : (
+              <>
+                <span className="kbd">⌘K</span> ask a question instead — takes a few seconds
+              </>
+            )}
           </span>
           <span style={{ marginLeft: 'auto' }}>
             <span className="kbd">esc</span> close

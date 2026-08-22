@@ -1211,6 +1211,27 @@ export interface VaultHit {
  * you could not name was effectively lost, while the embeddings and the hybrid
  * endpoint sat unused.
  */
+export interface FoundPage {
+  slug: string;
+  title: string;
+  excerpt: string;
+  in_title: boolean;
+}
+
+/**
+ * Literal text search: names and bodies, straight off the FTS index.
+ *
+ * Separate from `searchVault`, which is semantic and will decline a weak match.
+ * That is right for "things about retrieval" and wrong for "the file where I
+ * wrote that string".
+ */
+export async function findPages(query: string, limit = 30): Promise<FoundPage[]> {
+  const res = await apiFetch(
+    `/api/find?q=${encodeURIComponent(query)}&limit=${limit}`,
+  );
+  return res.json();
+}
+
 export async function searchVault(query: string, limit = 20): Promise<VaultHit[]> {
   const res = await apiFetch(
     `/api/search?q=${encodeURIComponent(query)}&limit=${limit}`,

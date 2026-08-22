@@ -52,3 +52,29 @@ describe('searchResults', () => {
     expect(searchResults([entry('a', 'A')], [])).toEqual([]);
   });
 });
+
+describe('searchResults with literal matches', () => {
+  it('puts a literal text match ahead of a semantic one', () => {
+    const results = searchResults([], [hit('semantic')], [
+      { slug: 'literal', title: 'Literal', excerpt: 'the matching line', in_title: false },
+    ]);
+    expect(results.map((e) => e.slug)).toEqual(['literal', 'semantic']);
+  });
+
+  it('finds a page the semantic floor rejected', () => {
+    // Typing a file name is the case semantic search is worst at, and the
+    // relevance floor turns "weak match" into "no results at all".
+    const results = searchResults([], [], [
+      { slug: 'deploy-runbook', title: 'Deploy runbook', excerpt: '', in_title: true },
+    ]);
+    expect(results.map((e) => e.slug)).toEqual(['deploy-runbook']);
+  });
+
+  it('does not list a page twice when both channels return it', () => {
+    const results = searchResults([], [hit('both')], [
+      { slug: 'both', title: 'Both', excerpt: 'line', in_title: false },
+    ]);
+    expect(results).toHaveLength(1);
+    expect(results[0].detail).toBe('line');
+  });
+});
