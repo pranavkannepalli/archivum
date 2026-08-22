@@ -151,6 +151,7 @@ async def _link_named_entities(
         return
 
     lowered = markdown.lower()
+    named = []
     for entity in entities:
         label = entity.label.strip()
         # An acronym has to be written as one; a longer name can be written
@@ -159,19 +160,28 @@ async def _link_named_entities(
         haystack = markdown if acronym else lowered
         needle = label if acronym else label.lower()
         # Whole words only: "Make" must not match "makeshift".
-        if not re.search(rf"(?<!\w){re.escape(needle)}(?!\w)", haystack):
-            continue
-        await repo.upsert_relationship(
-            KnowledgeRelationship(
-                id=f"rel:{page_id}:mentions:{entity.id}",
-                src_id=page_id,
-                dst_id=entity.id,
-                rel_type="mentions",
-                scope=scope,
-                confidence=0.6,
-                # Read off the page rather than stated by it.
-                extraction_method="INFERRED",
-                citations=[_citation(page_id, label)],
-                properties={"matched": label},
+        if re.search(rf"(?<!\w){re.escape(needle)}(?!\w)", haystack):
+            named.append((entity, label))
+    if not named:
+        return
+
+    # One transaction for the page's whole set. A commit per edge turned
+    # indexing one page into hundreds of them, all contending for the one
+    # write lock with every background worker.
+    async with repo.transaction():
+        for entity, label in named:
+            await repo.upsert_relationship(
+                KnowledgeRelationship(
+                    id=f"rel:{page_id}:mentions:{entity.id}",
+                    src_id=page_id,
+                    dst_id=entity.id,
+                    rel_type="mentions",
+                    scope=scope,
+                    confidence=0.6,
+                    # Read off the page rather than stated by it.
+                    extraction_method="INFERRED",
+                    citations=[_citation(page_id, label)],
+                    properties={"matched": label},
+                ),
+                commit=False,
             )
-        )

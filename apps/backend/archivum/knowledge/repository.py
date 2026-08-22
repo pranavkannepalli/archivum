@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from typing import Any
 
@@ -24,6 +26,23 @@ class KnowledgeRepository:
 
     def __init__(self, conn: aiosqlite.Connection) -> None:
         self._conn = conn
+
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[None]:
+        """Group writes into one commit.
+
+        Both `upsert_object` and `upsert_relationship` commit per call by
+        default, which is right for a single write and wrong for a batch: a page
+        with a hundred mentions became a hundred transactions, each taking the
+        one write lock while background workers waited for it.
+        """
+        await self._conn.execute("BEGIN")
+        try:
+            yield
+        except Exception:
+            await self._conn.rollback()
+            raise
+        await self._conn.commit()
 
     async def upsert_object(self, obj: KnowledgeObject, *, commit: bool = True) -> None:
         """Write one object; pass commit=False inside an open transaction."""
@@ -61,8 +80,17 @@ class KnowledgeRepository:
                 await self._conn.rollback()
             raise
 
-    async def upsert_relationship(self, rel: KnowledgeRelationship) -> None:
-        await self._conn.execute("BEGIN")
+    async def upsert_relationship(
+        self, rel: KnowledgeRelationship, *, commit: bool = True
+    ) -> None:
+        """Write one edge; pass commit=False inside an open transaction.
+
+        Matches `upsert_object`. Writing a page's mentions one transaction at a
+        time turned a single page index into hundreds of commits, each competing
+        with the background workers for the write lock.
+        """
+        if commit:
+            await self._conn.execute("BEGIN")
         try:
             await self._conn.execute(
                 """
@@ -90,9 +118,11 @@ class KnowledgeRepository:
                 ),
             )
             await self._replace_citations("relationship", rel.id, rel.citations)
-            await self._conn.commit()
+            if commit:
+                await self._conn.commit()
         except Exception:
-            await self._conn.rollback()
+            if commit:
+                await self._conn.rollback()
             raise
 
     async def get_object(self, object_id: str) -> KnowledgeObject | None:
