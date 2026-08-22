@@ -115,10 +115,17 @@ async def remove_page_from_knowledge(
     await repo.delete_object(_page_id(wiki_id, slug))
 
 
-# Short labels ("Go", "CLI", "AUR") occur inside ordinary prose constantly, and
-# matching them produces edges that say nothing.
+# Short labels occur inside ordinary prose constantly — "Go", "Make", "Set" —
+# and matching them produces edges that say nothing. Acronyms are the exception:
+# "JWT" and "XDG" are distinctive as long as the case has to agree, and skipping
+# every short label left real entities permanently cut off from the vault.
 _MIN_ENTITY_LABEL = 4
+_MIN_ACRONYM_LABEL = 2
 _MAX_ENTITY_SCAN = 2000
+
+
+def _is_acronym(label: str) -> bool:
+    return len(label) >= _MIN_ACRONYM_LABEL and label.isupper() and label.isalnum()
 
 
 async def _link_named_entities(
@@ -138,16 +145,21 @@ async def _link_named_entities(
     entities = [
         obj
         for obj in await repo.list_objects(kind="entity", scope=scope, limit=_MAX_ENTITY_SCAN)
-        if len(obj.label.strip()) >= _MIN_ENTITY_LABEL
+        if len(obj.label.strip()) >= _MIN_ENTITY_LABEL or _is_acronym(obj.label.strip())
     ]
     if not entities:
         return
 
-    haystack = markdown.lower()
+    lowered = markdown.lower()
     for entity in entities:
         label = entity.label.strip()
+        # An acronym has to be written as one; a longer name can be written
+        # however the author felt like writing it.
+        acronym = _is_acronym(label)
+        haystack = markdown if acronym else lowered
+        needle = label if acronym else label.lower()
         # Whole words only: "Make" must not match "makeshift".
-        if not re.search(rf"(?<!\w){re.escape(label.lower())}(?!\w)", haystack):
+        if not re.search(rf"(?<!\w){re.escape(needle)}(?!\w)", haystack):
             continue
         await repo.upsert_relationship(
             KnowledgeRelationship(

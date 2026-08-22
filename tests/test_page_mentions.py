@@ -93,3 +93,29 @@ async def test_editing_a_page_drops_mentions_it_no_longer_makes(repo):
     )
 
     assert await _mentions(repo) == set(), "a stale edge is a claim the page no longer makes"
+
+
+async def test_an_acronym_is_matched_when_it_is_written_as_one(repo):
+    """"CLI" and "JWT" are distinctive; "cli" inside prose is not.
+
+    Skipping every short label left real entities — AUR, GTK, JWT, SSE, XDG —
+    permanently disconnected from the vault. They are safe to match as long as
+    the case has to agree, which is what makes them acronyms rather than words.
+    """
+    await repo.upsert_object(_entity("JWT"))
+
+    await sync_page_to_knowledge(
+        repo, slug="notes", title="Notes", markdown="Auth uses a JWT cookie.", wiki_id="default",
+    )
+
+    assert await _mentions(repo) == {"entity:default:jwt"}
+
+
+async def test_a_lowercase_lookalike_is_not_an_acronym_mention(repo):
+    await repo.upsert_object(_entity("JWT"))
+
+    await sync_page_to_knowledge(
+        repo, slug="notes", title="Notes", markdown="we jwt around the topic", wiki_id="default",
+    )
+
+    assert await _mentions(repo) == set()
