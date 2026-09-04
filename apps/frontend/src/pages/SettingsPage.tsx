@@ -18,9 +18,12 @@ import {
   getCodexAuthStatus,
   getAudioSupport,
   getLlmSettings,
+  getMcpDevices,
   getMcpSettings,
   installAudioSupport,
+  issuePairingToken,
   listInvites,
+  revokeMcpDevice,
   startCodexDeviceLogin,
   updateLlmSettings,
   type AudioSupportInstallResult,
@@ -29,12 +32,15 @@ import {
   type CodexDeviceLogin,
   type InviteToken,
   type LlmSettings,
+  type McpDevice,
   type McpSettings,
+  type PairingToken,
 } from '../api';
 import { Button } from '../components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import { Badge } from '../components/ui/Badge';
 import { Input } from '../components/ui/Input';
+import { DevicesPanel } from '../components/DevicesPanel';
 import VaultRepair from '../surfaces/VaultRepair';
 import CodeRepos from '../surfaces/CodeRepos';
 
@@ -52,6 +58,8 @@ export default function SettingsPage() {
   const [audioSupport, setAudioSupport] = useState<AudioSupportStatus | null>(null);
   const [llmSettings, setLlmSettings] = useState<LlmSettings | null>(null);
   const [mcpSettings, setMcpSettings] = useState<McpSettings | null>(null);
+  const [devices, setDevices] = useState<McpDevice[]>([]);
+  const [pairing, setPairing] = useState<PairingToken | null>(null);
   const [llmDraft, setLlmDraft] = useState({
     llm_extraction_provider: 'ollama',
     llm_synthesis_provider: 'ollama',
@@ -67,11 +75,13 @@ export default function SettingsPage() {
     useState<AudioSupportInstallResult | null>(null);
   const [llmLoading, setLlmLoading] = useState(true);
   const [mcpLoading, setMcpLoading] = useState(true);
+  const [devicesLoading, setDevicesLoading] = useState(true);
   const [llmSaving, setLlmSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [audioError, setAudioError] = useState<string | null>(null);
   const [llmError, setLlmError] = useState<string | null>(null);
   const [mcpError, setMcpError] = useState<string | null>(null);
+  const [devicesError, setDevicesError] = useState<string | null>(null);
   const [llmSaved, setLlmSaved] = useState(false);
   const [mcpCopied, setMcpCopied] = useState(false);
   const [codexAuth, setCodexAuth] = useState<CodexAuthStatus | null>(null);
@@ -160,12 +170,44 @@ export default function SettingsPage() {
     }
   }, []);
 
+  const fetchDevices = useCallback(async () => {
+    setDevicesLoading(true);
+    setDevicesError(null);
+    try {
+      setDevices(await getMcpDevices());
+    } catch (e) {
+      setDevicesError(e instanceof Error ? e.message : 'Failed to load linked devices');
+    } finally {
+      setDevicesLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     fetchInvites();
     fetchAudioSupport();
     fetchLlmSettings();
     fetchMcpSettings();
-  }, [fetchAudioSupport, fetchInvites, fetchLlmSettings, fetchMcpSettings]);
+    fetchDevices();
+  }, [fetchAudioSupport, fetchInvites, fetchLlmSettings, fetchMcpSettings, fetchDevices]);
+
+  async function handleLinkDevice() {
+    setDevicesError(null);
+    try {
+      setPairing(await issuePairingToken());
+    } catch (e) {
+      setDevicesError(e instanceof Error ? e.message : 'Failed to issue a pairing token');
+    }
+  }
+
+  async function handleRevokeDevice(deviceId: string) {
+    setDevicesError(null);
+    try {
+      await revokeMcpDevice(deviceId);
+      await fetchDevices();
+    } catch (e) {
+      setDevicesError(e instanceof Error ? e.message : 'Failed to revoke device');
+    }
+  }
 
   async function handleGenerate() {
     setGenerating(true);
@@ -526,6 +568,23 @@ export default function SettingsPage() {
                 </Button>
               </div>
             ) : null}
+
+            <div className="subtle-divider mt-4 border-t pt-4">
+              {devicesLoading ? (
+                <LoadingText>Loading linked devices...</LoadingText>
+              ) : (
+                <>
+                  {devicesError && <InlineError>{devicesError}</InlineError>}
+                  <DevicesPanel
+                    devices={devices}
+                    pairing={pairing}
+                    legacyKeyConfigured={mcpSettings?.api_key_configured ?? false}
+                    onLink={handleLinkDevice}
+                    onRevoke={handleRevokeDevice}
+                  />
+                </>
+              )}
+            </div>
           </SettingsCard>
 
           <SettingsCard
