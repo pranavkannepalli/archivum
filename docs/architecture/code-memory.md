@@ -1,6 +1,6 @@
 # Code Memory
 
-Archivum is a second brain for someone who writes code, so a repository is not an import target — it is one of the things being remembered. Indexing a repo reads it into the same canonical knowledge store as pages and sources, registers it as a governed memory asset, and writes markdown into the vault. Code is ordinary vault content from that point on.
+Archivum is memory for someone who writes code, so a repository is not an import target — it is one of the things being remembered. Indexing a repo reads it into the same canonical knowledge store as pages and sources, registers it as a governed memory asset, and writes markdown into the vault. Code is ordinary vault content from that point on.
 
 ## Flow
 

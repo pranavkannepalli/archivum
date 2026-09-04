@@ -545,7 +545,7 @@ export default function SettingsPage() {
             icon={<PlugZap className="h-4 w-4" />}
             title="Agent Access"
             description="Copy a ready-to-use MCP configuration for local coding agents and assistants."
-            badge={mcpSettings?.api_key_configured ? 'Bearer auth on' : 'Bearer auth off'}
+            badge={mcpSettings?.api_key_configured ? 'Legacy key set' : 'Device keys only'}
           >
             {mcpLoading ? (
               <LoadingText>Checking agent access...</LoadingText>
@@ -558,8 +558,8 @@ export default function SettingsPage() {
                   <p className="mt-1 break-all font-mono text-xs text-muted-foreground">{mcpSettings.endpoint}</p>
                   <p className="mt-2 text-xs leading-5 text-muted-foreground">
                     {mcpSettings.auth_required
-                      ? 'Clients must send the configured MCP API key as a bearer token.'
-                      : 'No bearer token is required. Enable MCP_API_KEY for exposed deployments.'}
+                      ? 'Every request over HTTP must send a bearer token: a per-device key, or the legacy shared MCP_API_KEY.'
+                      : 'Every request over HTTP must send a per-device key as a bearer token. No legacy shared key is set, which is the end state to aim for.'}
                   </p>
                 </div>
                 <Button type="button" variant="outline" size="sm" onClick={handleCopyMcpConfig}>

@@ -114,8 +114,16 @@ which device to revoke from Settings.
 
 > **Getting the CLI today.** The CLI is published to GitHub Packages as
 > `@pranavkannepalli/archivum` and is not yet on the public npm registry, so
-> `npx archivum@latest` does not resolve. Until it is published there, run it from
-> a checkout: `node packages/archivum-cli/src/index.js connect arch1_...`.
+> `npx archivum@latest` does not resolve. Until it is published there, clone the
+> repo on the machine you are linking and run it from the checkout. No `npm
+> install` and no `.env` — the CLI has no dependencies, and `connect` reads none
+> of the repo's config:
+>
+> ```bash
+> git clone https://github.com/pranavkannepalli/archivum.git
+> cd archivum
+> node packages/archivum-cli/src/index.js connect arch1_...
+> ```
 
 ### Per-device keys
 
@@ -169,9 +177,12 @@ including what to set when the server sits behind a reverse proxy.
 
 | URL | Purpose |
 |---|---|
-| `http://localhost:8473` | Frontend container, direct |
-| `http://localhost:8000/api/*` | REST API |
+| `http://localhost:8473` | The interface |
+| `http://localhost:8473/api/*` | REST API — the frontend container proxies `/api/` to `backend:8000` |
 | `http://localhost:8001/sse` | MCP HTTP/SSE endpoint |
+
+The backend's own port `8000` is not published to the host. It is reachable only
+from inside the Compose network, which is why REST goes through `8473`.
 
 MCP tools exposed to agents, by what you want:
 

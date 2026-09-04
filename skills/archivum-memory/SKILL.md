@@ -5,7 +5,7 @@ description: Use when working in a repository Archivum has indexed - before debu
 
 # Archivum memory
 
-Archivum is a second brain that remembers your code and the work you did on it.
+Archivum is memory that remembers your code and the work you did on it.
 It already holds the graph of this repository, the sessions that changed it, and
 the fixes that settled past bugs. This skill is about *consulting* that before
 you act, so you are not solving something you already solved.

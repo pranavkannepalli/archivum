@@ -22,8 +22,18 @@ and in the redeem response.
 
 The CLI is published to GitHub Packages as `@pranavkannepalli/archivum` and is not
 on the public npm registry yet, so `npx archivum@latest` does not resolve today.
-Until it is published there, run it from a checkout:
-`node packages/archivum-cli/src/index.js connect arch1_...`.
+Until it is published there, clone the repo on the machine you are linking and run
+it from the checkout:
+
+```bash
+git clone https://github.com/pranavkannepalli/archivum.git
+cd archivum
+node packages/archivum-cli/src/index.js connect arch1_...
+```
+
+That needs Node 20+ and nothing else — the CLI has no dependencies, so there is no
+`npm install` step, and `connect` still reads no `.env`. It is a worse story than
+one `npx` line, and it goes away when the package is published.
 
 In order, `connect`:
 
