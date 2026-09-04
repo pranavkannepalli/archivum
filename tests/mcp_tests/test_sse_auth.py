@@ -119,9 +119,81 @@ async def test_a_device_key_authenticates_over_sse(tmp_path, monkeypatch):
     assert "list_pages" in {tool.name for tool in response.tools}
 
 
-def test_stdio_transport_does_not_require_a_bearer():
+def test_stdio_transport_does_not_require_a_bearer(monkeypatch):
+    # A configured key is what triggered the old bug: the old _require_key
+    # demanded a bearer whenever settings.mcp_api_key was set, even over
+    # stdio, where no bearer can ever be supplied. Without this, the test
+    # would pass against the old buggy code too, since mcp_api_key defaults
+    # to "".
+    monkeypatch.setattr(server.settings, "mcp_api_key", "some-key")
     server.set_transport("stdio")
     try:
         server._require_key()  # must not raise
     finally:
         server.set_transport("http")
+
+
+def test_sse_rejects_an_unknown_bearer(tmp_path, monkeypatch):
+    import aiosqlite
+
+    from archivum.devices.schema import init_devices_schema
+
+    db_path = tmp_path / "devices.db"
+
+    async def _init() -> None:
+        async with aiosqlite.connect(db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            await init_devices_schema(conn)
+
+    asyncio.run(_init())
+
+    @contextlib.asynccontextmanager
+    async def fake_get_db():
+        async with aiosqlite.connect(db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            yield conn
+
+    monkeypatch.setattr(server.sqlite, "get_db", fake_get_db)
+
+    app = server.create_mcp(Settings(mcp_api_key="")).sse_app(mount_path="/")
+
+    response = TestClient(app).get(
+        "/sse", headers={"Authorization": "Bearer wrong-key"}
+    )
+
+    assert response.status_code == 401
+
+
+def test_sse_rejects_a_revoked_device_key(tmp_path, monkeypatch):
+    import aiosqlite
+
+    from archivum.devices.repository import DeviceRepository
+    from archivum.devices.schema import init_devices_schema
+
+    db_path = tmp_path / "devices.db"
+
+    async def _init() -> str:
+        async with aiosqlite.connect(db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            await init_devices_schema(conn)
+            device, raw_key = await DeviceRepository(conn).mint("test laptop")
+            await DeviceRepository(conn).revoke(device["id"])
+            return raw_key
+
+    raw_key = asyncio.run(_init())
+
+    @contextlib.asynccontextmanager
+    async def fake_get_db():
+        async with aiosqlite.connect(db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            yield conn
+
+    monkeypatch.setattr(server.sqlite, "get_db", fake_get_db)
+
+    app = server.create_mcp(Settings(mcp_api_key="")).sse_app(mount_path="/")
+
+    response = TestClient(app).get(
+        "/sse", headers={"Authorization": f"Bearer {raw_key}"}
+    )
+
+    assert response.status_code == 401
