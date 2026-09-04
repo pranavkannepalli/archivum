@@ -1,5 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
+
+import { writeFileAtomic } from "./util.js";
 
 const CODEX_BEGIN = "# >>> archivum >>>";
 const CODEX_END = "# <<< archivum <<<";
@@ -15,19 +18,49 @@ function readJson(file) {
 }
 
 function writeJsonServer(file, { sseUrl, key }) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
   const config = readJson(file);
   config.mcpServers = {
     ...(config.mcpServers ?? {}),
     archivum: { url: sseUrl, headers: { Authorization: `Bearer ${key}` } },
   };
-  fs.writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
-  fs.chmodSync(file, 0o600);
-  return file;
+  return writeFileAtomic(file, `${JSON.stringify(config, null, 2)}\n`);
 }
 
-export function writeClaudeConfig({ home, sseUrl, key }) {
-  return writeJsonServer(path.join(home, ".claude.json"), { sseUrl, key });
+// `claude mcp add` is the supported way in, and it is the only one that is
+// certain to write the file Claude Code actually loads. It also keeps us out of
+// `~/.claude.json`, which is Claude Code's live state file — if the app is
+// running (likely: the user just read a pairing token in it) our rewrite and
+// its own would race, and one of the two would lose.
+//
+// `add` refuses a name that already exists, so a re-link would fail; remove
+// first and ignore the result, which is also what makes this idempotent.
+export function addClaudeServerViaCli({ sseUrl, key, spawnImpl = spawnSync }) {
+  const run = (args) => spawnImpl("claude", args, { encoding: "utf8", stdio: "pipe" });
+  const probe = run(["mcp", "list"]);
+  // No `claude` on PATH (ENOENT) means the file writer is the only option.
+  if (probe?.error || probe?.status !== 0) return null;
+  run(["mcp", "remove", "archivum", "--scope", "user"]);
+  const added = run([
+    "mcp",
+    "add",
+    "--scope",
+    "user",
+    "--transport",
+    "sse",
+    "archivum",
+    sseUrl,
+    "--header",
+    `Authorization: Bearer ${key}`,
+  ]);
+  if (added?.error || added?.status !== 0) return null;
+  return "Claude Code (claude mcp add --scope user)";
+}
+
+export function writeClaudeConfig({ home, sseUrl, key, spawnImpl = spawnSync }) {
+  return (
+    addClaudeServerViaCli({ sseUrl, key, spawnImpl }) ??
+    writeJsonServer(path.join(home, ".claude.json"), { sseUrl, key })
+  );
 }
 
 export function writeCursorConfig({ home, sseUrl, key }) {
@@ -36,7 +69,6 @@ export function writeCursorConfig({ home, sseUrl, key }) {
 
 export function writeCodexConfig({ home, sseUrl, key }) {
   const file = path.join(home, ".codex", "config.toml");
-  fs.mkdirSync(path.dirname(file), { recursive: true });
   const existing = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
   // Fenced block rather than a TOML parse: the CLI has no dependencies, and
   // rewriting only what we own keeps hand-written settings untouched.
@@ -52,9 +84,10 @@ export function writeCodexConfig({ home, sseUrl, key }) {
     CODEX_END,
     "",
   ].join("\n");
-  fs.writeFileSync(file, `${stripped.trimEnd()}\n${stripped.trim() ? "\n" : ""}${block}`.trimStart(), { mode: 0o600 });
-  fs.chmodSync(file, 0o600);
-  return file;
+  return writeFileAtomic(
+    file,
+    `${stripped.trimEnd()}\n${stripped.trim() ? "\n" : ""}${block}`.trimStart(),
+  );
 }
 
 export const CLIENT_WRITERS = {

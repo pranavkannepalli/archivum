@@ -20,6 +20,32 @@ Commands:
 Run from an Archivum install directory or repository root.`);
 }
 
+// Every file this CLI writes on a linked machine is a live file someone else
+// owns: `~/.claude.json` is Claude Code's running state (project history,
+// onboarding, caches), `~/.codex/config.toml` is hand-edited, and
+// `~/.archivum/connection.json` is the only record of the device key. A plain
+// writeFileSync truncates before it writes, so a Ctrl-C or a full disk leaves
+// the user with an unparseable file and no copy of what was there. Write beside
+// the target and rename: rename is atomic within a directory, so a reader sees
+// either the old file or the new one.
+export function writeFileAtomic(file, contents, { mode = 0o600 } = {}) {
+  const dir = path.dirname(file);
+  fs.mkdirSync(dir, { recursive: true });
+  const tmp = path.join(dir, `.${path.basename(file)}.${process.pid}.tmp`);
+  try {
+    fs.writeFileSync(tmp, contents, { mode });
+    // `mode` on writeFileSync only applies when the file is created, and the
+    // rename carries the temp file's mode onto the target — so tightening here
+    // also tightens a target that already existed with looser permissions.
+    fs.chmodSync(tmp, mode);
+    fs.renameSync(tmp, file);
+  } catch (error) {
+    fs.rmSync(tmp, { force: true });
+    throw error;
+  }
+  return file;
+}
+
 export function parseOptions(args) {
   const flags = new Set();
   const values = new Map();
