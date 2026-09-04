@@ -91,7 +91,20 @@ def test_redeeming_returns_a_device_key_and_connection_details(devices_client):
     assert response.status_code == 200
     assert body["key"].startswith("amk_")
     assert body["device_id"].startswith("dev_")
-    assert body["sse_url"].endswith("/sse")
+
+    # Locks Ruling 1: sse_url must resolve from the MCP server's own base
+    # (port 8001 by default), not the API's — the two are different services,
+    # and `.endswith("/sse")` alone would still pass if this regressed to
+    # reusing the API's base URL like the brief's original `_base_url` did.
+    settings = get_settings()
+    expected_sse = (
+        settings.mcp_public_url.strip() or f"http://localhost:{settings.mcp_port}/sse"
+    )
+    assert body["sse_url"] == expected_sse
+
+    # skill_url is an API route, so it must point at the API's own base
+    # (the test client's base URL), not the MCP port.
+    assert body["skill_url"] == f"{devices_client.base_url}/api/mcp/skill"
 
 
 def test_redeeming_twice_is_refused(devices_client):

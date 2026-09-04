@@ -47,6 +47,7 @@ services:
       - SUMMARY_WORKER_ENABLED=${SUMMARY_WORKER_ENABLED:-true}
       - SUMMARY_WORKER_INTERVAL_SECONDS=${SUMMARY_WORKER_INTERVAL_SECONDS:-3600}
       - MCP_PUBLIC_URL=${MCP_PUBLIC_URL:-}
+      - API_PUBLIC_URL=${API_PUBLIC_URL:-}
     volumes:
       - wiki_data:/data/wiki
       - raw_data:/data/raw

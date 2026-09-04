@@ -34,7 +34,10 @@ def _sse_url(settings: Settings) -> str:
     return settings.mcp_public_url.strip() or f"http://localhost:{settings.mcp_port}/sse"
 
 
-def _api_base(request: Request) -> str:
+def _api_base(request: Request, settings: Settings) -> str:
+    configured = settings.api_public_url.strip()
+    if configured:
+        return configured.rstrip("/")
     return str(request.base_url).rstrip("/")
 
 
@@ -46,7 +49,7 @@ async def issue_pairing_token(
 ) -> dict[str, str]:
     async with sqlite.get_db() as conn:
         token, expires_at = await PairingService(conn).issue(
-            _api_base(request), wiki_id=current_user.wiki_id
+            _api_base(request, settings), wiki_id=current_user.wiki_id
         )
     return {"token": token, "expires_at": expires_at}
 
@@ -72,7 +75,7 @@ async def redeem_pairing_token(
         "key": raw_key,
         "sse_url": _sse_url(settings),
         "vault_name": settings.owner_username or "Archivum",
-        "skill_url": f"{_api_base(request)}/api/mcp/skill",
+        "skill_url": f"{_api_base(request, settings)}/api/mcp/skill",
     }
 
 
