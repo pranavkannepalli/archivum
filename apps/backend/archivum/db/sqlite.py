@@ -254,6 +254,13 @@ async def init_db(settings: Settings) -> None:
         # Legacy share links become grants so a URL handed out before this
         # existed keeps resolving. Idempotent, so it is safe on every boot.
         await migrate_share_links(db)
+
+        # Imported locally: archivum.devices.repository imports
+        # archivum.sharing.models, and this module is imported by nearly
+        # everything, so a top-level import here risks a cycle.
+        from archivum.devices.schema import init_devices_schema
+
+        await init_devices_schema(db)
         await db.commit()
 
 

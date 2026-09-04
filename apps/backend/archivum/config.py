@@ -185,6 +185,8 @@ class Settings(BaseSettings):
     rate_limit_login_window_seconds: int = 600  # 10 minutes
     rate_limit_api_requests: int = 120
     rate_limit_api_window_seconds: int = 60
+    rate_limit_pairing_requests: int = 10
+    rate_limit_pairing_window_seconds: int = 600  # 10 minutes
 
     # ── MCP ────────────────────────────────────────────────────────────────
     mcp_host: str = "127.0.0.1"
@@ -204,6 +206,13 @@ class Settings(BaseSettings):
     # matches score ~0.6-0.8 and noise sits at ~0.50.
     search_min_similarity: float = 0.58
     mcp_public_url: str = ""
+    # The ASGI scope's scheme reflects the connection uvicorn itself sees,
+    # not what a client used to reach a proxy in front of it. The Dockerfile
+    # starts uvicorn with no proxy-header handling, so behind the Cloudflare
+    # tunnel `request.base_url` can come out http:// even though the public
+    # URL is https://. Pairing embeds this in the token the CLI dials, so a
+    # wrong scheme there is a wrong scheme `archivum connect` tries to use.
+    api_public_url: str = ""
 
 
 @lru_cache(maxsize=1)

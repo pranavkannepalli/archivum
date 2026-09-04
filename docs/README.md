@@ -1,6 +1,6 @@
 # Archivum Documentation
 
-This folder contains current docs for Archivum. Public-facing product docs should describe Archivum as a self-hosted, server-hosted Obsidian-style second brain.
+This folder contains current docs for Archivum. Public-facing product docs should describe Archivum as self-hosted memory for coding agents that a human can audit — one vault, reachable from every machine you code on. The wiki, graph, and sharing surfaces are how that memory is inspected and corrected, not the product itself. See [AGENTS.md](../AGENTS.md) for the full direction, including the claim about recall latency that must never be made.
 
 ## Start Here
 

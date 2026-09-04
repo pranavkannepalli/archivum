@@ -15,28 +15,33 @@ Container default is SSE. Use `--stdio` when shelling into the MCP container fro
 
 ## Client Examples
 
-stdio:
+Normally you do not write these by hand — `archivum connect` writes them. See
+[agent access](./agent-access.md) for linking a machine.
+
+stdio, on the machine running the container only. No key: stdio does not
+authenticate, because it is a local pipe into a container you can already
+`docker exec` into.
 
 ```json
 {
   "mcpServers": {
     "archivum": {
       "command": "docker",
-      "args": ["exec", "-i", "archivum-mcp", "python", "-m", "archivum.mcp.server", "--stdio"],
-      "env": { "MCP_API_KEY": "your-mcp-api-key" }
+      "args": ["exec", "-i", "archivum-mcp", "python", "-m", "archivum.mcp.server", "--stdio"]
     }
   }
 }
 ```
 
-HTTP/SSE:
+HTTP/SSE, which is what every machine other than the server's uses. The bearer is
+a per-device key from pairing, or a legacy `MCP_API_KEY` if you still have one set:
 
 ```json
 {
   "mcpServers": {
     "archivum": {
       "url": "http://localhost:8001/sse",
-      "headers": { "Authorization": "Bearer your-mcp-api-key" }
+      "headers": { "Authorization": "Bearer amk_..." }
     }
   }
 }
@@ -53,7 +58,6 @@ HTTP/SSE:
 | `write_page(title, content, slug, tags, wiki_id)` | Queue a page create/update and wait for re-indexing |
 | `life_daily_note(day, wiki_id)` | Create or return a daily note |
 | `life_register_project(key, name, summary, status, wiki_id)` | Register a project and create its page |
-| `life_create_task(title, project_key, page_slug, due_date, wiki_id)` | Create a Life OS task |
 | `graph_neighbors(node_id, wiki_id)` | Return one-hop Kuzu neighbors |
 | `export_graph_demo(output_dir)` | Write a self-contained demo graph export |
 | `lint_wiki(wiki_id)` | Report broken wikilinks, orphan pages, and contradictory claims |
@@ -71,14 +75,25 @@ HTTP/SSE:
 | `load_agent_memory(agent_key, query, wiki_id, limit)` | Return only the memory assets this agent is equipped with, cited |
 | `graph_audit_report(wiki_id, surprise_limit)` | Clusters, provenance breakdown, gaps, and surprising links |
 | `graph_shortest_path(source, target, wiki_id)` | Shortest relationship path between two canonical records |
+| `recall_fix(symptom, wiki_id)` | Repairs already remembered for this symptom — call before debugging |
+| `record_work(request, outcome, changed_paths, verified_by, wiki_id)` | Record what a session actually did, from any linked machine |
+| `vault_themes(wiki_id, limit)` | Cluster summaries: what this vault is about, cited |
+| `summarise_vault(wiki_id)` | Rebuild those cluster summaries |
 
 `distill_source`, `graph_audit_report`, and `graph_shortest_path` are deterministic and make no LLM call. See [memory assets](./memory-assets.md) and [graph model](./graph-model.md).
 
-Life OS tools are early product surfaces. Keep public positioning centered on the wiki, ingest, search, graph, sharing, export, and agent access.
+Life OS tools (`life_daily_note`, `life_register_project`) are an early surface and not what Archivum is for. See [AGENTS.md](../../AGENTS.md) for the product direction these docs follow.
 
 ## Security Note
 
-`MCP_API_KEY` is configured for clients, but stdio clients run locally inside the trusted container context. Do not expose MCP SSE publicly without a trusted network, reverse proxy, or additional access controls.
+HTTP/SSE always authenticates: every request must carry a bearer that resolves to
+an active per-device key or to `MCP_API_KEY` when that is set. An empty
+`MCP_API_KEY` means device keys only, not open access. stdio is exempt, because
+the transport is a local pipe into a container the caller can already reach.
+
+Do not expose MCP SSE publicly without a reverse proxy and access controls in
+front of the key. The full picture — pairing, per-device revocation, and retiring
+the legacy shared key — is in [agent access](./agent-access.md#security).
 
 ## Validation
 

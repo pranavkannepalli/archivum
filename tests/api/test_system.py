@@ -234,6 +234,31 @@ class TestLlmSettings(unittest.TestCase):
         self.assertIn("<MCP_API_KEY>", str(data))
         self.assertNotIn("mcp-secret", str(data))
 
+    def test_mcp_settings_config_carries_a_bearer_header_without_a_legacy_key(self):
+        """The default install has no MCP_API_KEY, and HTTP still authenticates.
+
+        A copied config with no Authorization header is guaranteed to 401, so
+        the button must hand back a placeholder the user can fill from
+        `archivum connect` rather than a config that cannot work.
+        """
+        settings = self.settings.model_copy(
+            update={"mcp_port": 8001, "mcp_api_key": "", "mcp_public_url": ""}
+        )
+
+        self.app.dependency_overrides[get_settings] = lambda: settings
+        try:
+            response = self.client.get("/api/settings/mcp")
+        finally:
+            self.app.dependency_overrides.clear()
+
+        data = response.json()
+        server = data["client_config"]["mcpServers"]["archivum"]
+        self.assertFalse(data["api_key_configured"])
+        self.assertTrue(data["auth_required"])
+        self.assertIn("Authorization", server["headers"])
+        self.assertIn("archivum connect", server["headers"]["Authorization"])
+        self.assertTrue(server["headers"]["Authorization"].startswith("Bearer "))
+
 
 class TestRebuildIndexes(unittest.TestCase):
     def setUp(self):

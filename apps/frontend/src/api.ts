@@ -1525,6 +1525,36 @@ export async function getMcpSettings(): Promise<McpSettings> {
   return res.json();
 }
 
+export type McpDevice = {
+  id: string;
+  name: string;
+  created_at: string;
+  last_seen_at: string | null;
+  revoked_at: string | null;
+};
+
+export type PairingToken = { token: string; expires_at: string };
+
+export async function getMcpDevices(): Promise<McpDevice[]> {
+  const res = await apiFetch('/api/mcp/devices');
+  if (!res.ok) throw new Error('Failed to load linked devices');
+  return (await res.json()).devices;
+}
+
+export async function issuePairingToken(): Promise<PairingToken> {
+  const res = await apiFetch('/api/mcp/pairing-tokens', { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to issue a pairing token');
+  return res.json();
+}
+
+export async function revokeMcpDevice(deviceId: string): Promise<boolean> {
+  const res = await apiFetch(`/api/mcp/devices/${encodeURIComponent(deviceId)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error('Failed to revoke device');
+  return (await res.json()).revoked;
+}
+
 export type LlmSettings = {
   llm_extraction_provider: string;
   llm_synthesis_provider: string;

@@ -33,6 +33,10 @@ def get_client_ip(request: Request) -> str:
 
 @dataclass(frozen=True)
 class RateLimitPolicy:
+    # Discriminates the limiter's per-key counter. Without this, two policies
+    # sharing the same key (e.g. IP alone) prune and consume each other's
+    # deque — see the pairing/redeem incident this field was added to fix.
+    bucket: str
     limit: int
     window_seconds: int
 
@@ -64,14 +68,26 @@ class InMemoryRateLimiter:
 def rate_limit_policy_for_path(path: str, settings: Settings) -> RateLimitPolicy | None:
     if path.startswith("/api/auth/login"):
         return RateLimitPolicy(
+            bucket="login",
             limit=settings.rate_limit_login_requests,
             window_seconds=settings.rate_limit_login_window_seconds,
+        )
+
+    # Its own bucket rather than the login bucket: deploy.md records that
+    # scripted traffic through the Cloudflare tunnel trips the shared login
+    # limiter, and pairing is exactly the scripted case.
+    if path.startswith("/api/mcp/pairing/redeem"):
+        return RateLimitPolicy(
+            bucket="pairing",
+            limit=settings.rate_limit_pairing_requests,
+            window_seconds=settings.rate_limit_pairing_window_seconds,
         )
 
     # “Rate limit everything” under /api so paid/expensive endpoints
     # can’t be hammered.
     if path.startswith("/api/"):
         return RateLimitPolicy(
+            bucket="api",
             limit=settings.rate_limit_api_requests,
             window_seconds=settings.rate_limit_api_window_seconds,
         )
@@ -97,7 +113,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         ip = get_client_ip(request)
-        allowed, retry_after = await self._limiter.check(f"{ip}", policy)
+        allowed, retry_after = await self._limiter.check(f"{policy.bucket}:{ip}", policy)
         if allowed:
             return await call_next(request)
 

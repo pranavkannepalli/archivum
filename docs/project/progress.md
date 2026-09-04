@@ -18,7 +18,7 @@ Archivum keeps markdown editable for humans while maintaining rebuildable semant
 |---|---|---|
 | Open-source cleanup | Verified | Private/generated project clutter was removed before this docs pass. |
 | Apache 2.0 licensing | Verified | `LICENSE`, npm package metadata, and backend package metadata are Apache-2.0. |
-| README product positioning | Verified | README now describes Archivum as a self-hosted, server-hosted Obsidian-style second brain. |
+| README product positioning | Verified | README now leads with self-hosted memory for coding agents that a human can audit, and with one-command linking across machines. |
 | Docs pruning | Verified | Stale PRD, stale operator handoff, and duplicate root progress doc were removed on 2026-07-13. |
 | Agent docs | Verified | `AGENTS.md`, `CLAUDE.md`, and `docs/agent-guide.md` point agents at current docs and verification commands. |
 | Docker Compose clean boot | Verified | 2026-08-12 retry: `docker compose up -d --build` built backend, frontend, and MCP images, recreated the app containers, and left backend, frontend, MCP, Caddy, Qdrant, and Ollama running. Probes returned HTTPS frontend 200, protected `/api/pages` 401 without auth, direct frontend 200, and MCP SSE 200 with the endpoint event using the configured bearer key. |

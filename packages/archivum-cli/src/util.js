@@ -14,9 +14,36 @@ Commands:
   stack <up|down|restart|logs|ps|build|shell>
   config <get|set|doctor>
   mcp config [--client claude|cursor|sse]
+  connect <pairing-token> [--name NAME] [--client claude|cursor|codex]
   wiki <ingest|search|query|pages|open|write|lint|graph|rebuild-indexes>
 
 Run from an Archivum install directory or repository root.`);
+}
+
+// Every file this CLI writes on a linked machine is a live file someone else
+// owns: `~/.claude.json` is Claude Code's running state (project history,
+// onboarding, caches), `~/.codex/config.toml` is hand-edited, and
+// `~/.archivum/connection.json` is the only record of the device key. A plain
+// writeFileSync truncates before it writes, so a Ctrl-C or a full disk leaves
+// the user with an unparseable file and no copy of what was there. Write beside
+// the target and rename: rename is atomic within a directory, so a reader sees
+// either the old file or the new one.
+export function writeFileAtomic(file, contents, { mode = 0o600 } = {}) {
+  const dir = path.dirname(file);
+  fs.mkdirSync(dir, { recursive: true });
+  const tmp = path.join(dir, `.${path.basename(file)}.${process.pid}.tmp`);
+  try {
+    fs.writeFileSync(tmp, contents, { mode });
+    // `mode` on writeFileSync only applies when the file is created, and the
+    // rename carries the temp file's mode onto the target — so tightening here
+    // also tightens a target that already existed with looser permissions.
+    fs.chmodSync(tmp, mode);
+    fs.renameSync(tmp, file);
+  } catch (error) {
+    fs.rmSync(tmp, { force: true });
+    throw error;
+  }
+  return file;
 }
 
 export function parseOptions(args) {
@@ -30,7 +57,7 @@ export function parseOptions(args) {
       const [name, inlineValue] = arg.slice(2).split(/=(.*)/s, 2);
       if (inlineValue !== undefined) {
         values.set(name, inlineValue);
-      } else if (i + 1 < args.length && !args[i + 1].startsWith("-") && ["set", "title", "content", "slug", "tag", "client", "service", "host", "dir"].includes(name)) {
+      } else if (i + 1 < args.length && !args[i + 1].startsWith("-") && ["set", "title", "content", "slug", "tag", "client", "service", "host", "dir", "name"].includes(name)) {
         const existing = values.get(name);
         const next = args[i + 1];
         values.set(name, existing === undefined ? next : Array.isArray(existing) ? [...existing, next] : [existing, next]);

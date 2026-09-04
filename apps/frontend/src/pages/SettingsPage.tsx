@@ -18,9 +18,12 @@ import {
   getCodexAuthStatus,
   getAudioSupport,
   getLlmSettings,
+  getMcpDevices,
   getMcpSettings,
   installAudioSupport,
+  issuePairingToken,
   listInvites,
+  revokeMcpDevice,
   startCodexDeviceLogin,
   updateLlmSettings,
   type AudioSupportInstallResult,
@@ -29,12 +32,15 @@ import {
   type CodexDeviceLogin,
   type InviteToken,
   type LlmSettings,
+  type McpDevice,
   type McpSettings,
+  type PairingToken,
 } from '../api';
 import { Button } from '../components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import { Badge } from '../components/ui/Badge';
 import { Input } from '../components/ui/Input';
+import { DevicesPanel } from '../components/DevicesPanel';
 import VaultRepair from '../surfaces/VaultRepair';
 import CodeRepos from '../surfaces/CodeRepos';
 
@@ -52,6 +58,8 @@ export default function SettingsPage() {
   const [audioSupport, setAudioSupport] = useState<AudioSupportStatus | null>(null);
   const [llmSettings, setLlmSettings] = useState<LlmSettings | null>(null);
   const [mcpSettings, setMcpSettings] = useState<McpSettings | null>(null);
+  const [devices, setDevices] = useState<McpDevice[]>([]);
+  const [pairing, setPairing] = useState<PairingToken | null>(null);
   const [llmDraft, setLlmDraft] = useState({
     llm_extraction_provider: 'ollama',
     llm_synthesis_provider: 'ollama',
@@ -67,13 +75,16 @@ export default function SettingsPage() {
     useState<AudioSupportInstallResult | null>(null);
   const [llmLoading, setLlmLoading] = useState(true);
   const [mcpLoading, setMcpLoading] = useState(true);
+  const [devicesLoading, setDevicesLoading] = useState(true);
   const [llmSaving, setLlmSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [audioError, setAudioError] = useState<string | null>(null);
   const [llmError, setLlmError] = useState<string | null>(null);
   const [mcpError, setMcpError] = useState<string | null>(null);
+  const [devicesError, setDevicesError] = useState<string | null>(null);
   const [llmSaved, setLlmSaved] = useState(false);
   const [mcpCopied, setMcpCopied] = useState(false);
+  const [pairingCopied, setPairingCopied] = useState(false);
   const [codexAuth, setCodexAuth] = useState<CodexAuthStatus | null>(null);
   const [codexLogin, setCodexLogin] = useState<CodexDeviceLogin | null>(null);
   const [codexAuthLoading, setCodexAuthLoading] = useState(false);
@@ -160,12 +171,61 @@ export default function SettingsPage() {
     }
   }, []);
 
+  const fetchDevices = useCallback(async () => {
+    setDevicesLoading(true);
+    setDevicesError(null);
+    try {
+      setDevices(await getMcpDevices());
+    } catch (e) {
+      setDevicesError(e instanceof Error ? e.message : 'Failed to load linked devices');
+    } finally {
+      setDevicesLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     fetchInvites();
     fetchAudioSupport();
     fetchLlmSettings();
     fetchMcpSettings();
-  }, [fetchAudioSupport, fetchInvites, fetchLlmSettings, fetchMcpSettings]);
+    fetchDevices();
+  }, [fetchAudioSupport, fetchInvites, fetchLlmSettings, fetchMcpSettings, fetchDevices]);
+
+  async function handleLinkDevice() {
+    setDevicesError(null);
+    setPairingCopied(false);
+    try {
+      setPairing(await issuePairingToken());
+    } catch (e) {
+      setDevicesError(e instanceof Error ? e.message : 'Failed to issue a pairing token');
+    }
+  }
+
+  async function handleCopyPairingToken() {
+    if (!pairing) return;
+    await navigator.clipboard.writeText(pairing.token);
+    setPairingCopied(true);
+    setTimeout(() => setPairingCopied(false), 2000);
+  }
+
+  // Linking happens on another machine, so nothing pushes the new device here.
+  // Dismissing the spent token is the moment the user knows it is done, which
+  // is also the right moment to re-read the list.
+  async function handleDismissPairing() {
+    setPairing(null);
+    setPairingCopied(false);
+    await fetchDevices();
+  }
+
+  async function handleRevokeDevice(deviceId: string) {
+    setDevicesError(null);
+    try {
+      await revokeMcpDevice(deviceId);
+      await fetchDevices();
+    } catch (e) {
+      setDevicesError(e instanceof Error ? e.message : 'Failed to revoke device');
+    }
+  }
 
   async function handleGenerate() {
     setGenerating(true);
@@ -503,7 +563,7 @@ export default function SettingsPage() {
             icon={<PlugZap className="h-4 w-4" />}
             title="Agent Access"
             description="Copy a ready-to-use MCP configuration for local coding agents and assistants."
-            badge={mcpSettings?.api_key_configured ? 'Bearer auth on' : 'Bearer auth off'}
+            badge={mcpSettings?.api_key_configured ? 'Legacy key set' : 'Device keys only'}
           >
             {mcpLoading ? (
               <LoadingText>Checking agent access...</LoadingText>
@@ -515,9 +575,9 @@ export default function SettingsPage() {
                   <p className="text-xs font-semibold uppercase tracking-[0.14em] text-zinc-500">Endpoint</p>
                   <p className="mt-1 break-all font-mono text-xs text-muted-foreground">{mcpSettings.endpoint}</p>
                   <p className="mt-2 text-xs leading-5 text-muted-foreground">
-                    {mcpSettings.auth_required
-                      ? 'Clients must send the configured MCP API key as a bearer token.'
-                      : 'No bearer token is required. Enable MCP_API_KEY for exposed deployments.'}
+                    {mcpSettings.api_key_configured
+                      ? 'Every request over HTTP must send a bearer token: a per-device key, or the legacy shared MCP_API_KEY.'
+                      : 'Every request over HTTP must send a per-device key as a bearer token. No legacy shared key is set, which is the end state to aim for. Link a device below to mint one.'}
                   </p>
                 </div>
                 <Button type="button" variant="outline" size="sm" onClick={handleCopyMcpConfig}>
@@ -526,6 +586,26 @@ export default function SettingsPage() {
                 </Button>
               </div>
             ) : null}
+
+            <div className="subtle-divider mt-4 border-t pt-4">
+              {devicesLoading ? (
+                <LoadingText>Loading linked devices...</LoadingText>
+              ) : (
+                <>
+                  {devicesError && <InlineError>{devicesError}</InlineError>}
+                  <DevicesPanel
+                    devices={devices}
+                    pairing={pairing}
+                    legacyKeyConfigured={mcpSettings?.api_key_configured ?? false}
+                    tokenCopied={pairingCopied}
+                    onLink={handleLinkDevice}
+                    onRevoke={handleRevokeDevice}
+                    onCopyToken={handleCopyPairingToken}
+                    onDismissPairing={handleDismissPairing}
+                  />
+                </>
+              )}
+            </div>
           </SettingsCard>
 
           <SettingsCard

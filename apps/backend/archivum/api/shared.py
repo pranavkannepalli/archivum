@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 # collapses everyone behind a proxy into a single bucket, so IP keying would
 # let one recipient's retries lock every other recipient out of claiming.
 _claim_limiter = InMemoryRateLimiter()
-_CLAIM_POLICY = RateLimitPolicy(limit=10, window_seconds=300)
+_CLAIM_POLICY = RateLimitPolicy(bucket="claim", limit=10, window_seconds=300)
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────────

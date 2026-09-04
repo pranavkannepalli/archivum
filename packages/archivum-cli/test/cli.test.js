@@ -15,5 +15,6 @@ test("help lists command groups", () => {
   assert.match(result.stdout, /uninstall/);
   assert.match(result.stdout, /stack/);
   assert.match(result.stdout, /mcp/);
+  assert.match(result.stdout, /connect/);
   assert.match(result.stdout, /wiki/);
 });
