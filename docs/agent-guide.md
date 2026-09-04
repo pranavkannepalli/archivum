@@ -4,18 +4,26 @@ Use this file when coding agents need fast repo context.
 
 ## Product Positioning
 
-Archivum is a self-hosted, server-hosted Obsidian-style second brain.
+Archivum is self-hosted memory for coding agents that a human can audit. The
+wedge is the developer whose agents run on more than one machine.
 
 Keep public docs and product language focused on:
 
-- Markdown wiki and vault navigation
-- Backlinks and wikilinks
-- File and URL ingest
-- Search, query, graph, sharing, and export
-- MCP access for agents
-- Docker Compose self-hosting
+- Memory agents use: governed memory assets, session distillation, cited recall, code context
+- Linking machines: pairing tokens, per-device keys, `archivum connect`
+- MCP access for agents over stdio and HTTP/SSE
+- File and URL ingest into that memory
+- Docker Compose self-hosting, with markdown on disk as the proof the vault is yours
 
-Do not describe Archivum as Archductor, Archgraph, project memory, or generic GraphRAG work unless the text is clearly a private integration note.
+The wiki surfaces — vault navigation, wikilinks and backlinks, graph, search,
+sharing, and export — stay in the product. Describe them as how memory is
+inspected and corrected, not as the product itself.
+
+Do not describe Archivum as Archductor, Archgraph, or generic GraphRAG work
+unless the text is clearly a private integration note. Never claim Archivum recalls faster than markdown files
+on disk; it is a network round trip plus ranking, and the honest claim is less
+context for the same answer and the same memory on every machine. See
+[AGENTS.md](../AGENTS.md).
 
 ## Source of Truth
 

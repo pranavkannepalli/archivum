@@ -17,7 +17,7 @@ Overrides: `PVE_HOST`, `ARCHIVUM_VMID`, `ARCHIVUM_APP_DIR`, `ARCHIVUM_BRANCH`.
 
 ## After the first deploy of this change
 
-Three things are inert until configured. None of them break anything by being
+Four things are inert until configured. None of them break anything by being
 left alone; they simply do nothing.
 
 **1. Sign the CLIs in**, so model work runs on your subscription rather than
@@ -47,9 +47,34 @@ TRANSCRIPT_HOST_DIR=/path/on/the/vm/to/transcripts
 TRANSCRIPT_DIRS=/data/transcripts
 ```
 
-**3. Expose MCP for chat clients** if you want claude.ai or ChatGPT to reach the
-vault. It binds to `127.0.0.1:8001` by default, so it needs a proxy entry and a
-non-empty `MCP_API_KEY` — bearer auth is only enforced when that is set. See
+On a hosted deployment this only covers transcripts on the VM. Agents running on
+your laptops write their transcripts to those laptops, which the server cannot
+read, so **automatic capture does not cover them**. What works today is explicit
+`record_work` — it is an MCP tool, so it travels over the wire from any linked
+machine, and the `archivum-memory` skill is what gets an agent to call it without
+being asked. A transcript shipper that closes this gap is planned; until it ships,
+do not assume work done on a laptop appears in the stream on its own.
+
+**3. Set the public URLs** so pairing hands out addresses that work off the VM:
+
+```
+API_PUBLIC_URL=https://archivum.example.com
+MCP_PUBLIC_URL=https://archivum-mcp.example.com/sse
+```
+
+Pairing tokens embed `API_PUBLIC_URL`; without it the base URL is derived from the
+request uvicorn sees, whose scheme can differ from what the client used through
+the tunnel, and a token can carry `http://` for an `https://` server. Redeeming a
+token hands back `MCP_PUBLIC_URL` as the SSE endpoint; without it every paired
+device is configured with `http://localhost:8001/sse`, which is right on the VM
+and useless anywhere else.
+
+**4. Link your machines and expose MCP.** MCP binds to `127.0.0.1:8001`, so a
+proxy entry is what makes it reachable at all. Once it is published, issue a
+pairing token from Settings → Agent Access and run
+`archivum connect <token>` on each machine you code from. Each gets its own
+revocable key; `MCP_API_KEY` is no longer required, and HTTP now refuses
+unauthenticated requests whether or not it is set. See
 [agent access](./agent-access.md).
 
 ## Rolling back

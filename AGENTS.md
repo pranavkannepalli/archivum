@@ -13,18 +13,30 @@ When pulling work from Linear in this repository:
 
 ## Product Direction
 
-Archivum is a self-hosted, server-hosted Obsidian-style second brain.
+Archivum is self-hosted memory for coding agents that a human can audit. The
+wedge is the developer whose agents run on more than one machine and who wants
+repo context, decisions, and past fixes to follow them.
 
 Keep public-facing docs and work focused on:
 
-- Markdown wiki and vault navigation
-- Backlinks and wikilinks
-- File and URL ingest
-- Search, query, graph, sharing, and export
-- MCP access for agents
-- Docker Compose self-hosting
+- Memory agents use: governed memory assets, session distillation, cited recall, code context
+- Linking machines: pairing tokens, per-device keys, `archivum connect`
+- MCP access for agents over stdio and HTTP/SSE
+- Ingest of files and URLs into that memory
+- Docker Compose self-hosting, with markdown on disk as the proof that the vault is yours
 
-Do not describe Archivum as Archductor, Archgraph, project memory, or generic GraphRAG work unless it is clearly a private integration note.
+The wiki surfaces — vault navigation, wikilinks and backlinks, graph views,
+search, sharing, and export — stay in the product and stay documented. Describe
+them as how memory is inspected and corrected, not as the product itself.
+
+Two constraints on how this is written:
+
+- Do not describe Archivum as Archductor, Archgraph, or generic GraphRAG work
+  unless it is clearly a private integration note.
+- Never claim Archivum recalls faster than markdown files on disk. Reading a
+  local `CLAUDE.md` is a filesystem read; Archivum retrieval is a network round
+  trip plus ranking, so it is slower per call. The honest and stronger claim is
+  less context for the same answer, and the same memory on every machine.
 
 ## Agent Source of Truth
 
