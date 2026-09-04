@@ -407,19 +407,26 @@ async def mcp_settings(
     settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
     endpoint = settings.mcp_public_url.strip() or f"http://localhost:{settings.mcp_port}/sse"
-    headers = {"Authorization": "Bearer <MCP_API_KEY>"} if settings.mcp_api_key else {}
+    # HTTP/SSE always authenticates now — a device key or the legacy shared key.
+    # Emitting a config with no Authorization header on a device-keys-only
+    # install (the documented end state) would hand the user a config that is
+    # guaranteed to 401, so name the placeholder they have to fill instead.
+    placeholder = (
+        "Bearer <MCP_API_KEY>"
+        if settings.mcp_api_key
+        else "Bearer <device key from archivum connect>"
+    )
     client_config: dict[str, Any] = {
         "mcpServers": {
             "archivum": {
                 "url": endpoint,
+                "headers": {"Authorization": placeholder},
             }
         }
     }
-    if headers:
-        client_config["mcpServers"]["archivum"]["headers"] = headers
     return {
         "endpoint": endpoint,
-        "auth_required": bool(settings.mcp_api_key),
+        "auth_required": True,
         "api_key_configured": bool(settings.mcp_api_key),
         "client_config": client_config,
     }

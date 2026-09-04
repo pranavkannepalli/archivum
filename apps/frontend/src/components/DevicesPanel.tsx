@@ -6,9 +6,25 @@ type DevicesPanelProps = {
   devices: McpDevice[];
   pairing: PairingToken | null;
   legacyKeyConfigured: boolean;
+  tokenCopied?: boolean;
   onLink: () => void;
   onRevoke: (deviceId: string) => void;
+  onCopyToken?: () => void;
+  onDismissPairing?: () => void;
 };
+
+// The command has to be the one that works today. The CLI is published to
+// GitHub Packages as @pranavkannepalli/archivum and not to public npm, so
+// `npx archivum@latest` either errors after a registry round trip — inside a
+// fifteen-minute window — or resolves to somebody else's `archivum` package,
+// which the user would then hand a token that redeems to full vault access.
+function connectCommand(token: string) {
+  return [
+    'git clone https://github.com/pranavkannepalli/archivum.git',
+    'cd archivum',
+    `node packages/archivum-cli/src/index.js connect ${token}`,
+  ].join('\n');
+}
 
 function formatDate(iso: string | null) {
   if (!iso) return 'Never';
@@ -25,7 +41,16 @@ function formatDate(iso: string | null) {
   }
 }
 
-export function DevicesPanel({ devices, pairing, legacyKeyConfigured, onLink, onRevoke }: DevicesPanelProps) {
+export function DevicesPanel({
+  devices,
+  pairing,
+  legacyKeyConfigured,
+  tokenCopied = false,
+  onLink,
+  onRevoke,
+  onCopyToken,
+  onDismissPairing,
+}: DevicesPanelProps) {
   return (
     <div className="space-y-3">
       <Button type="button" variant="outline" size="sm" onClick={onLink}>
@@ -37,12 +62,28 @@ export function DevicesPanel({ devices, pairing, legacyKeyConfigured, onLink, on
           <p className="text-xs font-semibold uppercase tracking-[0.14em] text-zinc-500">
             Run this on the new machine
           </p>
-          <code className="mt-2 block break-all font-mono text-xs text-muted-foreground">
-            {`npx archivum@latest connect ${pairing.token}`}
-          </code>
+          <pre className="mt-2 whitespace-pre-wrap break-all font-mono text-xs text-muted-foreground">
+            {connectCommand(pairing.token)}
+          </pre>
+          <p className="mt-2 text-xs leading-5 text-muted-foreground">
+            Needs Node 20+ and nothing else. This becomes{' '}
+            <span className="font-mono">npx archivum@latest connect</span> once the CLI is on public npm.
+          </p>
           <p className="mt-2 text-xs leading-5 text-muted-foreground">
             This token works once and expires in 15 minutes.
           </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {onCopyToken && (
+              <Button type="button" variant="outline" size="sm" onClick={onCopyToken}>
+                {tokenCopied ? 'Copied token' : 'Copy token'}
+              </Button>
+            )}
+            {onDismissPairing && (
+              <Button type="button" variant="ghost" size="sm" onClick={onDismissPairing}>
+                Done — refresh devices
+              </Button>
+            )}
+          </div>
         </div>
       )}
 
@@ -51,7 +92,9 @@ export function DevicesPanel({ devices, pairing, legacyKeyConfigured, onLink, on
           <div className="min-w-0">
             <p className="text-sm text-foreground">legacy shared key</p>
             <p className="text-xs leading-5 text-muted-foreground">
-              Authenticates every client that holds it. Retire it once machines are linked individually.
+              Authenticates every client that holds it, so it cannot be revoked from here. Once every
+              machine is linked individually, retire it by unsetting MCP_API_KEY in .env and restarting
+              the stack.
             </p>
           </div>
           <Badge variant="secondary" className="shrink-0 text-xs">

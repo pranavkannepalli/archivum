@@ -84,6 +84,7 @@ export default function SettingsPage() {
   const [devicesError, setDevicesError] = useState<string | null>(null);
   const [llmSaved, setLlmSaved] = useState(false);
   const [mcpCopied, setMcpCopied] = useState(false);
+  const [pairingCopied, setPairingCopied] = useState(false);
   const [codexAuth, setCodexAuth] = useState<CodexAuthStatus | null>(null);
   const [codexLogin, setCodexLogin] = useState<CodexDeviceLogin | null>(null);
   const [codexAuthLoading, setCodexAuthLoading] = useState(false);
@@ -192,11 +193,28 @@ export default function SettingsPage() {
 
   async function handleLinkDevice() {
     setDevicesError(null);
+    setPairingCopied(false);
     try {
       setPairing(await issuePairingToken());
     } catch (e) {
       setDevicesError(e instanceof Error ? e.message : 'Failed to issue a pairing token');
     }
+  }
+
+  async function handleCopyPairingToken() {
+    if (!pairing) return;
+    await navigator.clipboard.writeText(pairing.token);
+    setPairingCopied(true);
+    setTimeout(() => setPairingCopied(false), 2000);
+  }
+
+  // Linking happens on another machine, so nothing pushes the new device here.
+  // Dismissing the spent token is the moment the user knows it is done, which
+  // is also the right moment to re-read the list.
+  async function handleDismissPairing() {
+    setPairing(null);
+    setPairingCopied(false);
+    await fetchDevices();
   }
 
   async function handleRevokeDevice(deviceId: string) {
@@ -557,9 +575,9 @@ export default function SettingsPage() {
                   <p className="text-xs font-semibold uppercase tracking-[0.14em] text-zinc-500">Endpoint</p>
                   <p className="mt-1 break-all font-mono text-xs text-muted-foreground">{mcpSettings.endpoint}</p>
                   <p className="mt-2 text-xs leading-5 text-muted-foreground">
-                    {mcpSettings.auth_required
+                    {mcpSettings.api_key_configured
                       ? 'Every request over HTTP must send a bearer token: a per-device key, or the legacy shared MCP_API_KEY.'
-                      : 'Every request over HTTP must send a per-device key as a bearer token. No legacy shared key is set, which is the end state to aim for.'}
+                      : 'Every request over HTTP must send a per-device key as a bearer token. No legacy shared key is set, which is the end state to aim for. Link a device below to mint one.'}
                   </p>
                 </div>
                 <Button type="button" variant="outline" size="sm" onClick={handleCopyMcpConfig}>
@@ -579,8 +597,11 @@ export default function SettingsPage() {
                     devices={devices}
                     pairing={pairing}
                     legacyKeyConfigured={mcpSettings?.api_key_configured ?? false}
+                    tokenCopied={pairingCopied}
                     onLink={handleLinkDevice}
                     onRevoke={handleRevokeDevice}
+                    onCopyToken={handleCopyPairingToken}
+                    onDismissPairing={handleDismissPairing}
                   />
                 </>
               )}
