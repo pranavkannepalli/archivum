@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import socket
 from contextlib import asynccontextmanager
 
@@ -69,3 +70,58 @@ async def test_sse_transport_allows_valid_configured_bearer_token_to_list_tools(
 
     assert "list_pages" in {tool.name for tool in response.tools}
     assert not tool_response.isError
+
+
+def test_sse_rejects_missing_bearer_even_with_no_api_key_configured():
+    """An empty MCP_API_KEY used to mean 'serve the vault to anyone'.
+
+    docker-compose defaults MCP_API_KEY to empty, so the shipped default was an
+    unauthenticated vault on any host where the port was reachable.
+    """
+    app = server.create_mcp(Settings(mcp_api_key="")).sse_app(mount_path="/")
+
+    response = TestClient(app).get("/sse")
+
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_a_device_key_authenticates_over_sse(tmp_path, monkeypatch):
+    import aiosqlite
+
+    from archivum.devices.repository import DeviceRepository
+    from archivum.devices.schema import init_devices_schema
+
+    db_path = tmp_path / "devices.db"
+    async with aiosqlite.connect(db_path) as conn:
+        conn.row_factory = aiosqlite.Row
+        await init_devices_schema(conn)
+        _, raw_key = await DeviceRepository(conn).mint("test laptop")
+
+    @contextlib.asynccontextmanager
+    async def fake_get_db():
+        async with aiosqlite.connect(db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            yield conn
+
+    monkeypatch.setattr(server.sqlite, "get_db", fake_get_db)
+
+    app = server.create_mcp(Settings(mcp_api_key="")).sse_app(mount_path="/")
+
+    async with _serve_app(app) as base_url:
+        async with sse_client(
+            f"{base_url}/sse", headers={"Authorization": f"Bearer {raw_key}"}
+        ) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                response = await session.list_tools()
+
+    assert "list_pages" in {tool.name for tool in response.tools}
+
+
+def test_stdio_transport_does_not_require_a_bearer():
+    server.set_transport("stdio")
+    try:
+        server._require_key()  # must not raise
+    finally:
+        server.set_transport("http")

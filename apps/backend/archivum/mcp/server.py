@@ -16,6 +16,7 @@ from mcp.server.auth.settings import AuthSettings
 
 from archivum.capture.schema import Conversation, ToolCall, Turn
 from archivum.code_repos import index_repo, list_repos, register_repo, scope_for
+from archivum.devices.repository import DeviceRepository
 from archivum.fixes import recall_fixes
 from archivum.sessions import record_session_work
 from archivum.summaries import global_answer_context, summarise_communities
@@ -57,24 +58,55 @@ setup_logging()
 set_trace_id(new_trace_id("mcp-startup"))
 
 
-class StaticBearerTokenVerifier:
-    """Validate MCP bearer tokens against the configured static API key."""
+class DeviceBearerTokenVerifier:
+    """Accept the legacy shared key or any active per-device key.
+
+    The legacy key is checked first and in constant time; device keys are
+    resolved by hash lookup. Keeping the legacy key valid is what lets existing
+    installs keep working while machines migrate to `archivum connect`.
+    """
 
     def __init__(self, api_key: str) -> None:
         self._api_key = api_key
 
     async def verify_token(self, token: str) -> AccessToken | None:
-        if not self._api_key or not hmac.compare_digest(token, self._api_key):
+        if self._api_key and hmac.compare_digest(token, self._api_key):
+            return AccessToken(token=token, client_id="archivum-legacy-key", scopes=[])
+        async with sqlite.get_db() as conn:
+            device = await DeviceRepository(conn).verify(token)
+        if device is None:
             return None
-        return AccessToken(token=token, client_id="archivum-mcp", scopes=[])
+        return AccessToken(token=token, client_id=device["id"], scopes=[])
 
 
-def create_mcp(app_settings: Settings, *, register_existing_tools: bool = True) -> FastMCP:
+_transport = "http"
+
+
+def set_transport(transport: str) -> None:
+    """Record which transport this process is serving.
+
+    stdio is a local pipe into a container the caller can already exec into, so
+    a bearer check there protects nothing. HTTP is reachable from the network
+    and always authenticates.
+    """
+    global _transport
+    _transport = transport
+
+
+def create_mcp(
+    app_settings: Settings,
+    *,
+    register_existing_tools: bool = True,
+    transport: str = "http",
+) -> FastMCP:
     token_verifier = None
     auth = None
-    if app_settings.mcp_api_key:
-        token_verifier = StaticBearerTokenVerifier(app_settings.mcp_api_key)
-        resource_url = f"http://localhost:{app_settings.mcp_port}"
+    if transport == "http":
+        token_verifier = DeviceBearerTokenVerifier(app_settings.mcp_api_key)
+        resource_url = (
+            app_settings.mcp_public_url.strip()
+            or f"http://localhost:{app_settings.mcp_port}"
+        )
         auth = AuthSettings(
             issuer_url=resource_url,
             resource_server_url=resource_url,
@@ -109,10 +141,9 @@ mcp = create_mcp(settings, register_existing_tools=False)
 
 
 def _require_key() -> None:
-    if not settings.mcp_api_key:
+    if _transport == "stdio":
         return
-    token = get_access_token()
-    if token is None or not hmac.compare_digest(token.token, settings.mcp_api_key):
+    if get_access_token() is None:
         raise PermissionError("MCP bearer authentication required")
 
 
@@ -994,12 +1025,14 @@ def main() -> None:
 
     if args.stdio:
         logger.info("Starting MCP server (stdio)", extra={"port": settings.mcp_port})
+        set_transport("stdio")
         mcp.run(transport="stdio")
         return
 
     # Default to SSE for container usage. Host is set when FastMCP is created;
     # port is configured via MCP_PORT.
     logger.info("Starting MCP server (sse)", extra={"host": settings.mcp_host, "port": settings.mcp_port})
+    set_transport("http")
     mcp.run(transport="sse", mount_path="/")
 
 

@@ -10,6 +10,20 @@ from archivum.mcp import server
 from archivum.retrieval.hybrid import HybridHit
 
 
+@pytest.fixture(autouse=True)
+def _direct_tool_calls_bypass_transport_auth():
+    """These tests call `@mcp.tool()` functions directly, not through a
+    transport — there is no request to carry a bearer. That is the same kind
+    of trusted local invocation stdio is exempt for, not a network call that
+    needs a device key, so run tool calls here as if over stdio.
+    """
+    server.set_transport("stdio")
+    try:
+        yield
+    finally:
+        server.set_transport("http")
+
+
 @pytest.fixture
 def temp_settings(tmp_path):
     return Settings(
