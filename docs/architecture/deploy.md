@@ -65,9 +65,12 @@ MCP_PUBLIC_URL=https://archivum-mcp.example.com/sse
 Pairing tokens embed `API_PUBLIC_URL`; without it the base URL is derived from the
 request uvicorn sees, whose scheme can differ from what the client used through
 the tunnel, and a token can carry `http://` for an `https://` server. Redeeming a
-token hands back `MCP_PUBLIC_URL` as the SSE endpoint; without it every paired
-device is configured with `http://localhost:8001/sse`, which is right on the VM
-and useless anywhere else.
+token hands back `MCP_PUBLIC_URL` as the SSE endpoint. Without it the only URL
+available is `http://localhost:8001/sse`, which is right on the VM and useless
+anywhere else — so redeem refuses with HTTP 503 and `mcp_url_unresolved` rather
+than configuring a laptop to talk to its own port 8001. The refusal does not
+spend the token: set `MCP_PUBLIC_URL`, restart the stack, and run `connect` again
+with the same one.
 
 **4. Link your machines and expose MCP.** MCP binds to `127.0.0.1:8001`, so a
 proxy entry is what makes it reachable at all. Once it is published, issue a

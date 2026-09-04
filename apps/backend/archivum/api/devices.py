@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import PlainTextResponse
@@ -29,9 +30,39 @@ def _public(device: dict[str, Any]) -> dict[str, Any]:
     return {field: device[field] for field in _PUBLIC_FIELDS}
 
 
-def _sse_url(settings: Settings) -> str:
-    # Same idiom as `api/system.py:409`, which already resolves this endpoint.
-    return settings.mcp_public_url.strip() or f"http://localhost:{settings.mcp_port}/sse"
+_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+
+
+class SseUrlUnresolved(Exception):
+    """The only SSE URL we could offer points at the wrong machine."""
+
+
+def _is_loopback(url: str) -> bool:
+    host = (urlsplit(url).hostname or "").lower()
+    return host in _LOOPBACK_HOSTS or host.endswith(".localhost")
+
+
+def _sse_url(request: Request, settings: Settings) -> str:
+    """Resolve the SSE URL to hand a machine being linked.
+
+    `mcp_public_url` is optional and commented out in `.env.example`, so a
+    remote install can easily reach here with only `API_PUBLIC_URL` set. The
+    fallback — `http://localhost:{mcp_port}/sse` — is correct on a
+    single-machine install and actively wrong everywhere else: it is written
+    into the linked machine's client configs, where it names *that* machine's
+    port 8001. Refuse rather than hand out a URL that cannot reach this vault.
+    """
+    # Same idiom as `api/system.py`, which already resolves this endpoint.
+    resolved = settings.mcp_public_url.strip() or f"http://localhost:{settings.mcp_port}/sse"
+    if _is_loopback(resolved) and not _is_loopback(_api_base(request, settings)):
+        raise SseUrlUnresolved(
+            f"This vault is reached at {_api_base(request, settings)}, but the MCP "
+            f"endpoint resolves to {resolved}, which points at the machine running "
+            "`archivum connect` rather than at this vault. Set MCP_PUBLIC_URL in .env "
+            "to the URL your MCP server is reachable at and restart the stack. The "
+            "pairing token has not been spent — retry with the same one."
+        )
+    return resolved
 
 
 def _api_base(request: Request, settings: Settings) -> str:
@@ -78,6 +109,16 @@ async def redeem_pairing_token(
     request: Request,
     settings: Settings = Depends(get_settings),
 ) -> dict[str, str]:
+    # Resolved before redeem, never after: redeem burns the token, and a
+    # server misconfiguration must not cost the user their one-shot token.
+    try:
+        sse_url = _sse_url(request, settings)
+    except SseUrlUnresolved as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"detail": str(exc), "code": "mcp_url_unresolved"},
+        ) from exc
+
     async with sqlite.get_db() as conn:
         try:
             device, raw_key = await PairingService(conn).redeem(
@@ -91,7 +132,7 @@ async def redeem_pairing_token(
     return {
         "device_id": device["id"],
         "key": raw_key,
-        "sse_url": _sse_url(settings),
+        "sse_url": sse_url,
         "vault_name": settings.owner_username or "Archivum",
         "skill_url": f"{_api_base(request, settings)}/api/mcp/skill",
     }

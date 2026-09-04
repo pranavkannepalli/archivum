@@ -50,7 +50,14 @@ def devices_client(tmp_path):
     ):
         from archivum.main import create_app
 
-        client = TestClient(create_app(), raise_server_exceptions=True)
+        # base_url is loopback on purpose: with no API_PUBLIC_URL set, the
+        # redeem endpoint reads the request's own base to decide whether the
+        # localhost SSE fallback could possibly reach this vault. The default
+        # `http://testserver` would read as a remote install and (correctly)
+        # refuse to hand out a localhost SSE URL.
+        client = TestClient(
+            create_app(), base_url="http://localhost", raise_server_exceptions=True
+        )
         client.cookies.set("access_token", token)
         # POST/DELETE under cookie auth go through the CSRF double-submit
         # check (see _CSRFProtection in main.py); match the pattern
@@ -249,3 +256,108 @@ def test_an_owner_session_without_a_device_key_cannot_reach_self_routes(devices_
     response = devices_client.get("/api/mcp/devices/self")
 
     assert response.status_code == 401
+
+
+def _settings_override(client, **updates):
+    """Point the app at a copy of settings for one request.
+
+    The fixture builds the app without a `get_settings` override, so pairing
+    reads process settings; these tests need to vary the two public-URL
+    settings that decide whether an SSE URL is reachable at all.
+    """
+    settings = get_settings().model_copy(update=updates)
+    client.app.dependency_overrides[get_settings] = lambda: settings
+    return settings
+
+
+def test_redeem_refuses_a_loopback_sse_url_when_the_api_is_remote(devices_client):
+    """A remote install with no MCP_PUBLIC_URL must not hand out localhost.
+
+    The redeemed URL is written straight into three client configs on the
+    machine being linked, where `http://localhost:8001/sse` means that
+    machine's own port 8001 — a vault that does not exist.
+    """
+    _, secret = decode_pairing_token(_issue(devices_client))
+    _settings_override(
+        devices_client, api_public_url="https://vault.example.com", mcp_public_url=""
+    )
+
+    try:
+        response = devices_client.post(
+            "/api/mcp/pairing/redeem",
+            json={"secret": secret, "device_name": "work laptop"},
+        )
+    finally:
+        devices_client.app.dependency_overrides.clear()
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "mcp_url_unresolved"
+    assert "MCP_PUBLIC_URL" in response.json()["detail"]["detail"]
+
+
+def test_a_refused_redeem_leaves_the_pairing_token_unspent(devices_client):
+    """Config errors must not cost the user their one-shot token."""
+    _, secret = decode_pairing_token(_issue(devices_client))
+    _settings_override(
+        devices_client, api_public_url="https://vault.example.com", mcp_public_url=""
+    )
+    try:
+        devices_client.post(
+            "/api/mcp/pairing/redeem", json={"secret": secret, "device_name": "a"}
+        )
+    finally:
+        devices_client.app.dependency_overrides.clear()
+
+    _settings_override(
+        devices_client,
+        api_public_url="https://vault.example.com",
+        mcp_public_url="https://mcp.example.com/sse",
+    )
+    try:
+        retry = devices_client.post(
+            "/api/mcp/pairing/redeem", json={"secret": secret, "device_name": "a"}
+        )
+    finally:
+        devices_client.app.dependency_overrides.clear()
+
+    assert retry.status_code == 200
+    assert retry.json()["sse_url"] == "https://mcp.example.com/sse"
+
+
+def test_redeem_refuses_an_explicitly_loopback_mcp_url_when_the_api_is_remote(
+    devices_client,
+):
+    """Setting MCP_PUBLIC_URL to localhost is the same failure, spelled out."""
+    _, secret = decode_pairing_token(_issue(devices_client))
+    _settings_override(
+        devices_client,
+        api_public_url="https://vault.example.com",
+        mcp_public_url="http://localhost:8001/sse",
+    )
+
+    try:
+        response = devices_client.post(
+            "/api/mcp/pairing/redeem", json={"secret": secret, "device_name": "a"}
+        )
+    finally:
+        devices_client.app.dependency_overrides.clear()
+
+    assert response.status_code == 503
+
+
+def test_a_localhost_install_still_redeems_to_a_localhost_sse_url(devices_client):
+    """The single-machine case is untouched: both sides are loopback."""
+    _, secret = decode_pairing_token(_issue(devices_client))
+    settings = _settings_override(
+        devices_client, api_public_url="http://localhost:8000", mcp_public_url=""
+    )
+
+    try:
+        response = devices_client.post(
+            "/api/mcp/pairing/redeem", json={"secret": secret, "device_name": "a"}
+        )
+    finally:
+        devices_client.app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["sse_url"] == f"http://localhost:{settings.mcp_port}/sse"
