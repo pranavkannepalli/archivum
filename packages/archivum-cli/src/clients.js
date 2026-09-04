@@ -21,7 +21,8 @@ function writeJsonServer(file, { sseUrl, key }) {
     ...(config.mcpServers ?? {}),
     archivum: { url: sseUrl, headers: { Authorization: `Bearer ${key}` } },
   };
-  fs.writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`);
+  fs.writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+  fs.chmodSync(file, 0o600);
   return file;
 }
 
@@ -51,7 +52,8 @@ export function writeCodexConfig({ home, sseUrl, key }) {
     CODEX_END,
     "",
   ].join("\n");
-  fs.writeFileSync(file, `${stripped.trimEnd()}\n${stripped.trim() ? "\n" : ""}${block}`.trimStart());
+  fs.writeFileSync(file, `${stripped.trimEnd()}\n${stripped.trim() ? "\n" : ""}${block}`.trimStart(), { mode: 0o600 });
+  fs.chmodSync(file, 0o600);
   return file;
 }
 

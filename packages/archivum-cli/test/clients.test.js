@@ -73,3 +73,54 @@ test("writeCodexConfig leaves unrelated toml intact", () => {
 
   assert.match(fs.readFileSync(target, "utf8"), /model = "gpt-5"/);
 });
+
+test("writeClaudeConfig writes file with mode 0o600 and tightens pre-existing files", () => {
+  const home = tempHome();
+  const target = path.join(home, ".claude.json");
+
+  // Fresh file should have mode 0o600
+  writeClaudeConfig(opts(home));
+  let mode = fs.statSync(target).mode & 0o777;
+  assert.equal(mode, 0o600);
+
+  // Pre-existing file at 0o644 should be tightened to 0o600
+  fs.chmodSync(target, 0o644);
+  assert.equal(fs.statSync(target).mode & 0o777, 0o644);
+  writeClaudeConfig(opts(home));
+  mode = fs.statSync(target).mode & 0o777;
+  assert.equal(mode, 0o600);
+});
+
+test("writeCursorConfig writes file with mode 0o600 and tightens pre-existing files", () => {
+  const home = tempHome();
+  const target = path.join(home, ".cursor", "mcp.json");
+
+  // Fresh file should have mode 0o600
+  writeCursorConfig(opts(home));
+  let mode = fs.statSync(target).mode & 0o777;
+  assert.equal(mode, 0o600);
+
+  // Pre-existing file at 0o644 should be tightened to 0o600
+  fs.chmodSync(target, 0o644);
+  assert.equal(fs.statSync(target).mode & 0o777, 0o644);
+  writeCursorConfig(opts(home));
+  mode = fs.statSync(target).mode & 0o777;
+  assert.equal(mode, 0o600);
+});
+
+test("writeCodexConfig writes file with mode 0o600 and tightens pre-existing files", () => {
+  const home = tempHome();
+  const target = path.join(home, ".codex", "config.toml");
+
+  // Fresh file should have mode 0o600
+  writeCodexConfig(opts(home));
+  let mode = fs.statSync(target).mode & 0o777;
+  assert.equal(mode, 0o600);
+
+  // Pre-existing file at 0o644 should be tightened to 0o600
+  fs.chmodSync(target, 0o644);
+  assert.equal(fs.statSync(target).mode & 0o777, 0o644);
+  writeCodexConfig(opts(home));
+  mode = fs.statSync(target).mode & 0o777;
+  assert.equal(mode, 0o600);
+});
