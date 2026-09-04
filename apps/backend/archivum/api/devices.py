@@ -41,6 +41,24 @@ def _api_base(request: Request, settings: Settings) -> str:
     return str(request.base_url).rstrip("/")
 
 
+async def require_device(request: Request) -> dict[str, Any]:
+    """Authenticate a caller by its own device key.
+
+    Owner routes decode a JWT; a device key is an opaque bearer that only
+    `DeviceRepository.verify` understands, so a device authenticating as
+    itself needs its own dependency.
+    """
+    header = request.headers.get("Authorization", "")
+    scheme, _, raw_key = header.partition(" ")
+    if scheme.lower() != "bearer" or not raw_key:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Device key required")
+    async with sqlite.get_db() as conn:
+        device = await DeviceRepository(conn).verify(raw_key)
+    if device is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Device key required")
+    return device
+
+
 @router.post("/pairing-tokens")
 async def issue_pairing_token(
     request: Request,
@@ -98,6 +116,32 @@ async def get_agent_skill() -> str:
             detail={"detail": "Agent skill is not bundled with this build.", "code": "skill_missing"},
         )
     return SKILL_PATH.read_text()
+
+
+@router.get("/devices/self")
+async def get_own_device(
+    device: dict[str, Any] = Depends(require_device),
+) -> dict[str, Any]:
+    """What `--status` calls: a 200 here means the caller's own key still authenticates.
+
+    Registered ahead of `/devices/{device_id}` so "self" is never captured as
+    a device id path parameter.
+    """
+    return _public(device)
+
+
+@router.delete("/devices/self")
+async def revoke_own_device(
+    device: dict[str, Any] = Depends(require_device),
+) -> dict[str, bool]:
+    """What `--revoke` calls: a device key can revoke only itself.
+
+    Registered ahead of `/devices/{device_id}` for the same routing reason as
+    `get_own_device` above.
+    """
+    async with sqlite.get_db() as conn:
+        revoked = await DeviceRepository(conn).revoke(device["id"])
+    return {"revoked": revoked}
 
 
 @router.get("/devices")

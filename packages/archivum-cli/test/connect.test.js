@@ -6,7 +6,7 @@ import path from "node:path";
 
 import { spawnSync } from "node:child_process";
 
-import { decodePairingToken, installSkill, redeem, saveState } from "../src/connect.js";
+import { connectCommand, decodePairingToken, installSkill, redeem, revoke, saveState, status } from "../src/connect.js";
 
 function encode(baseUrl, secret) {
   const payload = Buffer.from(JSON.stringify({ u: baseUrl, s: secret })).toString("base64url");
@@ -115,6 +115,160 @@ test("saveState writes the connection file with mode 0o600 and tightens pre-exis
   saveState(home, state);
   mode = fs.statSync(target).mode & 0o777;
   assert.equal(mode, 0o600);
+});
+
+function linkedState(overrides = {}) {
+  return {
+    device_id: "dev_1",
+    base_url: "https://vault.example.com",
+    sse_url: "https://vault.example.com/sse",
+    key: "amk_1",
+    linked_at: "2026-09-03T00:00:00.000Z",
+    clients: ["claude"],
+    ...overrides,
+  };
+}
+
+test("status calls the self endpoint with the stored key and reports it authenticates", async (t) => {
+  const home = tempHome();
+  saveState(home, linkedState());
+  const logs = [];
+  t.mock.method(console, "log", (msg) => logs.push(msg));
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, headers: init.headers });
+    return { ok: true };
+  };
+
+  await status(home, { fetchImpl });
+
+  assert.equal(calls[0].url, "https://vault.example.com/api/mcp/devices/self");
+  assert.equal(calls[0].headers.Authorization, "Bearer amk_1");
+  assert.ok(logs.some((line) => /Key authenticates\./.test(line)));
+});
+
+test("status reports the key no longer authenticates when the self endpoint refuses it", async (t) => {
+  const home = tempHome();
+  saveState(home, linkedState());
+  const logs = [];
+  t.mock.method(console, "log", (msg) => logs.push(msg));
+  const fetchImpl = async () => ({ ok: false, status: 401 });
+
+  await status(home, { fetchImpl });
+
+  assert.ok(logs.some((line) => /Key no longer authenticates\./.test(line)));
+});
+
+test("status reports the key no longer authenticates when the server is unreachable", async (t) => {
+  const home = tempHome();
+  saveState(home, linkedState());
+  const logs = [];
+  t.mock.method(console, "log", (msg) => logs.push(msg));
+  const fetchImpl = async () => {
+    throw new Error("ECONNREFUSED");
+  };
+
+  await status(home, { fetchImpl });
+
+  assert.ok(logs.some((line) => /Key no longer authenticates\./.test(line)));
+});
+
+test("revoke deletes local state only once the server confirms the self-revoke", async (t) => {
+  const home = tempHome();
+  saveState(home, linkedState());
+  t.mock.method(console, "log", () => {});
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, method: init.method, headers: init.headers });
+    return { ok: true, json: async () => ({ revoked: true }) };
+  };
+
+  await revoke(home, { fetchImpl });
+
+  assert.equal(calls[0].url, "https://vault.example.com/api/mcp/devices/self");
+  assert.equal(calls[0].method, "DELETE");
+  assert.equal(calls[0].headers.Authorization, "Bearer amk_1");
+  assert.equal(fs.existsSync(path.join(home, ".archivum", "connection.json")), false);
+});
+
+test("revoke refuses to delete local state when the server does not confirm", async () => {
+  const home = tempHome();
+  saveState(home, linkedState());
+  const fetchImpl = async () => ({ ok: false, status: 401 });
+
+  await assert.rejects(revoke(home, { fetchImpl }), /dev_1|Settings/);
+
+  assert.equal(fs.existsSync(path.join(home, ".archivum", "connection.json")), true);
+});
+
+test("revoke refuses to delete local state when the server is unreachable", async () => {
+  const home = tempHome();
+  saveState(home, linkedState());
+  const fetchImpl = async () => {
+    throw new Error("ECONNREFUSED");
+  };
+
+  await assert.rejects(revoke(home, { fetchImpl }), /Settings|reachable/);
+
+  assert.equal(fs.existsSync(path.join(home, ".archivum", "connection.json")), true);
+});
+
+test("connectCommand rejects an unknown --client before the pairing token is redeemed", async () => {
+  const home = tempHome();
+  let fetchCalled = false;
+  const fetchImpl = async () => {
+    fetchCalled = true;
+    throw new Error("must not be called: client validation should happen first");
+  };
+  const token = encode("https://vault.example.com", "s3cr3t");
+
+  await assert.rejects(
+    connectCommand([token, "--client", "vscode"], { home, fetchImpl }),
+    /Unknown client: vscode/,
+  );
+
+  assert.equal(fetchCalled, false);
+  assert.equal(fs.existsSync(path.join(home, ".archivum", "connection.json")), false);
+});
+
+test("connectCommand refuses to write any client config when the redeem response is missing required fields", async () => {
+  const home = tempHome();
+  const fetchImpl = async (url) => {
+    assert.equal(url, "https://vault.example.com/api/mcp/pairing/redeem");
+    return { ok: true, json: async () => ({ device_id: "dev_1" }) }; // missing key, sse_url
+  };
+  const token = encode("https://vault.example.com", "s3cr3t");
+
+  await assert.rejects(
+    connectCommand([token, "--client", "claude"], { home, fetchImpl }),
+    /key, sse_url|missing/,
+  );
+
+  assert.equal(fs.existsSync(path.join(home, ".claude.json")), false);
+  assert.equal(fs.existsSync(path.join(home, ".archivum", "connection.json")), false);
+});
+
+test("connectCommand saves state before running client writers, so a writer failure still leaves the key recoverable", async () => {
+  const home = tempHome();
+  // A pre-existing .claude.json that is not valid JSON makes writeClaudeConfig
+  // throw (see clients.js's readJson) — simulating a mid-loop writer failure.
+  fs.writeFileSync(path.join(home, ".claude.json"), "{not valid json");
+  const fetchImpl = async (url) => {
+    if (url.endsWith("/pairing/redeem")) {
+      return {
+        ok: true,
+        json: async () => ({ device_id: "dev_1", key: "amk_1", sse_url: "https://vault.example.com/sse" }),
+      };
+    }
+    return { ok: false, status: 404 };
+  };
+  const token = encode("https://vault.example.com", "s3cr3t");
+
+  await assert.rejects(connectCommand([token, "--client", "claude"], { home, fetchImpl }));
+
+  const state = JSON.parse(fs.readFileSync(path.join(home, ".archivum", "connection.json"), "utf8"));
+  assert.equal(state.device_id, "dev_1");
+  assert.equal(state.key, "amk_1");
 });
 
 test("connect runs without a repo checkout or an env file", () => {

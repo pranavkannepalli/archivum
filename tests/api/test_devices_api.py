@@ -167,3 +167,85 @@ def test_revoking_a_device_in_another_wiki_is_refused(devices_client):
     response = devices_client.delete(f"/api/mcp/devices/{device_id}")
 
     assert response.status_code == 404
+
+
+def _redeem_key(client) -> tuple[str, str]:
+    """Issue and redeem a pairing token, returning (device_id, raw_key)."""
+    _, secret = decode_pairing_token(_issue(client))
+    body = client.post(
+        "/api/mcp/pairing/redeem", json={"secret": secret, "device_name": "laptop"}
+    ).json()
+    return body["device_id"], body["key"]
+
+
+def test_a_device_can_read_its_own_record_with_its_own_key(devices_client):
+    device_id, key = _redeem_key(devices_client)
+    devices_client.cookies.clear()
+
+    response = devices_client.get(
+        "/api/mcp/devices/self", headers={"Authorization": f"Bearer {key}"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["id"] == device_id
+    assert "key_hash" not in response.json()
+
+
+def test_an_unknown_device_key_is_refused(devices_client):
+    devices_client.cookies.clear()
+
+    response = devices_client.get(
+        "/api/mcp/devices/self", headers={"Authorization": "Bearer amk_not-a-real-key"}
+    )
+
+    assert response.status_code == 401
+
+
+def test_a_device_can_revoke_itself(devices_client):
+    _, key = _redeem_key(devices_client)
+    devices_client.cookies.clear()
+
+    response = devices_client.delete(
+        "/api/mcp/devices/self", headers={"Authorization": f"Bearer {key}"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["revoked"] is True
+
+
+def test_a_revoked_device_key_no_longer_authenticates(devices_client):
+    _, key = _redeem_key(devices_client)
+    devices_client.cookies.clear()
+    devices_client.delete(
+        "/api/mcp/devices/self", headers={"Authorization": f"Bearer {key}"}
+    )
+
+    response = devices_client.get(
+        "/api/mcp/devices/self", headers={"Authorization": f"Bearer {key}"}
+    )
+
+    assert response.status_code == 401
+
+
+def test_self_revoke_on_an_already_revoked_key_reports_not_revoked(devices_client):
+    _, key = _redeem_key(devices_client)
+    devices_client.cookies.clear()
+    devices_client.delete(
+        "/api/mcp/devices/self", headers={"Authorization": f"Bearer {key}"}
+    )
+
+    # The key no longer verifies once revoked, so a second self-revoke with
+    # the same key must fail authentication rather than report success.
+    response = devices_client.delete(
+        "/api/mcp/devices/self", headers={"Authorization": f"Bearer {key}"}
+    )
+
+    assert response.status_code == 401
+
+
+def test_an_owner_session_without_a_device_key_cannot_reach_self_routes(devices_client):
+    # devices_client carries an owner cookie by default and no Authorization
+    # header — a device key is the only credential require_device accepts.
+    response = devices_client.get("/api/mcp/devices/self")
+
+    assert response.status_code == 401

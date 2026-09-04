@@ -35,6 +35,31 @@ export async function redeem({ baseUrl, secret, deviceName, fetchImpl = fetch })
   return response.json();
 }
 
+// A 200 with a body missing what we're about to persist and hand to every
+// client config is worse than a rejected request: the pairing token is
+// already spent, and nothing downstream would notice until the agent tried
+// to use a `Bearer undefined` header. Fail loudly before writing anything.
+function assertRedeemResult(details) {
+  const missing = ["device_id", "key", "sse_url"].filter((field) => !details?.[field]);
+  if (missing.length > 0) {
+    throw new Error(
+      `Server response to pairing redeem was missing ${missing.join(", ")}. ` +
+        "The pairing token has been spent; check the server before issuing another.",
+    );
+  }
+}
+
+// Checked before redeem spends the one-time token: an unsupported --client
+// must not cost the user their only shot at that token.
+function assertKnownClients(clients) {
+  const unknown = clients.filter((client) => !CLIENT_WRITERS[client]);
+  if (unknown.length > 0) {
+    throw new Error(
+      `Unknown client: ${unknown.join(", ")}. Supported: ${Object.keys(CLIENT_WRITERS).join(", ")}.`,
+    );
+  }
+}
+
 export async function installSkill({ home, skillUrl, fetchImpl = fetch }) {
   const response = await fetchImpl(skillUrl).catch(() => null);
   // A server without a bundled skill is a working server; linking must not fail
@@ -67,7 +92,7 @@ function readState(home) {
   return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : null;
 }
 
-async function status(home) {
+export async function status(home, { fetchImpl = fetch } = {}) {
   const state = readState(home);
   if (!state) {
     console.log("Not linked. Run: archivum connect <pairing-token>");
@@ -75,29 +100,41 @@ async function status(home) {
   }
   console.log(`Linked to ${state.base_url} as ${state.device_id}`);
   console.log(`Clients configured: ${state.clients.join(", ") || "none"}`);
-  const response = await fetch(`${state.base_url}/api/mcp/devices`, {
+  // /devices/self authenticates with the device's own key (require_device on
+  // the server), so a 200 here is a direct answer to "does this key still
+  // work" rather than the owner-only /devices list, which 401s no matter
+  // what the device key is.
+  const response = await fetchImpl(`${state.base_url}/api/mcp/devices/self`, {
     headers: { Authorization: `Bearer ${state.key}` },
   }).catch(() => null);
   console.log(response?.ok ? "Key authenticates." : "Key no longer authenticates.");
 }
 
-async function revoke(home) {
+export async function revoke(home, { fetchImpl = fetch } = {}) {
   const state = readState(home);
   if (!state) throw new Error("Nothing to revoke: this machine is not linked.");
-  await fetch(`${state.base_url}/api/mcp/devices/${state.device_id}`, {
+  const response = await fetchImpl(`${state.base_url}/api/mcp/devices/self`, {
     method: "DELETE",
     headers: { Authorization: `Bearer ${state.key}` },
   }).catch(() => null);
+  if (!response?.ok) {
+    // An offline machine, or a key the server has already forgotten, must
+    // never print "Revoked." while the local record — the only note of
+    // which device_id to revoke from Settings — still exists to delete.
+    throw new Error(
+      `Could not confirm revocation with the server (device ${state.device_id}). ` +
+        "Revoke it from Settings, or retry once the server is reachable. Local state was left in place.",
+    );
+  }
   fs.rmSync(statePath(home), { force: true });
   console.log("Revoked. Remove the archivum entry from your MCP clients if you want it gone from disk.");
 }
 
-export async function connectCommand(args) {
+export async function connectCommand(args, { home = os.homedir(), fetchImpl = fetch } = {}) {
   const { flags, values, positionals } = parseOptions(args);
-  const home = os.homedir();
 
-  if (flags.has("status")) return status(home);
-  if (flags.has("revoke")) return revoke(home);
+  if (flags.has("status")) return status(home, { fetchImpl });
+  if (flags.has("revoke")) return revoke(home, { fetchImpl });
 
   const token = positionals[0];
   if (!token) {
@@ -112,21 +149,16 @@ export async function connectCommand(args) {
   if (clients.length === 0) {
     throw new Error("No supported MCP client found. Install Claude Code, Cursor, or Codex, or pass --client.");
   }
+  assertKnownClients(clients);
 
   const deviceName = values.get("name") ?? `${os.hostname()} / ${clients.join("+")}`;
-  const details = await redeem({ baseUrl, secret, deviceName });
+  const details = await redeem({ baseUrl, secret, deviceName, fetchImpl });
+  assertRedeemResult(details);
 
-  const written = [];
-  for (const client of clients) {
-    const writer = CLIENT_WRITERS[client];
-    if (!writer) throw new Error(`Unknown client: ${client}`);
-    written.push(writer({ home, sseUrl: details.sse_url, key: details.key }));
-  }
-
-  const skillPath = details.skill_url
-    ? await installSkill({ home, skillUrl: details.skill_url })
-    : null;
-
+  // Save state before running any client writer or fetching the skill: the
+  // token is spent and the key is live on the server the instant redeem
+  // returns, so from here on a partial failure (one writer throwing, a slow
+  // skill fetch) must still leave the key recoverable rather than orphaned.
   saveState(home, {
     device_id: details.device_id,
     base_url: baseUrl,
@@ -135,6 +167,15 @@ export async function connectCommand(args) {
     linked_at: new Date().toISOString(),
     clients,
   });
+
+  const written = [];
+  for (const client of clients) {
+    written.push(CLIENT_WRITERS[client]({ home, sseUrl: details.sse_url, key: details.key }));
+  }
+
+  const skillPath = details.skill_url
+    ? await installSkill({ home, skillUrl: details.skill_url, fetchImpl })
+    : null;
 
   console.log(`Linked to ${details.vault_name ?? baseUrl} as "${deviceName}".`);
   for (const file of written) console.log(`  configured ${file}`);
