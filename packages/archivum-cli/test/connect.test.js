@@ -6,7 +6,22 @@ import path from "node:path";
 
 import { spawnSync } from "node:child_process";
 
-import { connectCommand, decodePairingToken, installSkill, redeem, revoke, saveState, status } from "../src/connect.js";
+import {
+  assertReachableSseUrl,
+  connectCommand,
+  decodePairingToken,
+  installSkill,
+  redeem,
+  revoke,
+  saveState,
+  status,
+  verifyConnection,
+} from "../src/connect.js";
+
+// connectCommand hands this to the Claude writer. Without it the writer would
+// shell out to the developer's real `claude` binary and rewrite their own MCP
+// config; "not installed" routes the test through the file writer instead.
+const noClaudeCli = () => ({ error: Object.assign(new Error("spawn claude ENOENT"), { code: "ENOENT" }) });
 
 function encode(baseUrl, secret) {
   const payload = Buffer.from(JSON.stringify({ u: baseUrl, s: secret })).toString("base64url");
@@ -223,7 +238,7 @@ test("connectCommand rejects an unknown --client before the pairing token is red
   const token = encode("https://vault.example.com", "s3cr3t");
 
   await assert.rejects(
-    connectCommand([token, "--client", "vscode"], { home, fetchImpl }),
+    connectCommand([token, "--client", "vscode"], { home, fetchImpl, spawnImpl: noClaudeCli }),
     /Unknown client: vscode/,
   );
 
@@ -240,7 +255,7 @@ test("connectCommand refuses to write any client config when the redeem response
   const token = encode("https://vault.example.com", "s3cr3t");
 
   await assert.rejects(
-    connectCommand([token, "--client", "claude"], { home, fetchImpl }),
+    connectCommand([token, "--client", "claude"], { home, fetchImpl, spawnImpl: noClaudeCli }),
     /key, sse_url|missing/,
   );
 
@@ -264,7 +279,7 @@ test("connectCommand saves state before running client writers, so a writer fail
   };
   const token = encode("https://vault.example.com", "s3cr3t");
 
-  await assert.rejects(connectCommand([token, "--client", "claude"], { home, fetchImpl }));
+  await assert.rejects(connectCommand([token, "--client", "claude"], { home, fetchImpl, spawnImpl: noClaudeCli }));
 
   const state = JSON.parse(fs.readFileSync(path.join(home, ".archivum", "connection.json"), "utf8"));
   assert.equal(state.device_id, "dev_1");
@@ -283,4 +298,201 @@ test("connect runs without a repo checkout or an env file", () => {
   // No token given, so it must fail on usage — never on a missing .env or root.
   assert.match(result.stderr, /Usage: archivum connect/);
   assert.doesNotMatch(result.stderr, /install directory|repository root|\.env/i);
+});
+
+
+const REDEEMED = {
+  device_id: "dev_2",
+  key: "amk_2",
+  sse_url: "https://vault.example.com/sse",
+  vault_name: "pranav",
+};
+
+// A fetchImpl that answers redeem, the skill fetch, the SSE verification and
+// the self-revoke, recording every call so tests can assert on the sequence.
+function scriptedFetch({ sse = { ok: true }, redeemBody = REDEEMED, onDelete = () => ({ ok: true }) } = {}) {
+  const calls = [];
+  const fetchImpl = async (url, init = {}) => {
+    calls.push({ url, method: init.method ?? "GET", headers: init.headers });
+    if (url.endsWith("/pairing/redeem")) return { ok: true, json: async () => redeemBody };
+    if (url.endsWith("/api/mcp/devices/self")) return onDelete();
+    if (url === redeemBody.sse_url) {
+      if (typeof sse === "function") return sse();
+      return sse;
+    }
+    return { ok: false, status: 404 };
+  };
+  return { calls, fetchImpl };
+}
+
+test("verifyConnection reports success when the SSE endpoint accepts the device key", async () => {
+  const seen = [];
+  const fetchImpl = async (url, init) => {
+    seen.push({ url, auth: init.headers.Authorization, accept: init.headers.Accept });
+    return { ok: true, status: 200, body: { cancel: async () => {} } };
+  };
+
+  const result = await verifyConnection({ sseUrl: "https://v/sse", key: "amk_1", fetchImpl });
+
+  assert.deepEqual(result, { ok: true });
+  assert.equal(seen[0].url, "https://v/sse");
+  assert.equal(seen[0].auth, "Bearer amk_1");
+  assert.equal(seen[0].accept, "text/event-stream");
+});
+
+test("verifyConnection reports a refused key rather than a generic failure", async () => {
+  const fetchImpl = async () => ({ ok: false, status: 401 });
+
+  const result = await verifyConnection({ sseUrl: "https://v/sse", key: "amk_1", fetchImpl });
+
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /refused this device key \(HTTP 401\)/);
+  assert.ok(result.hint);
+});
+
+test("verifyConnection reports an unreachable endpoint with the URL it tried", async () => {
+  const fetchImpl = async () => {
+    throw new Error("ECONNREFUSED");
+  };
+
+  const result = await verifyConnection({ sseUrl: "https://v/sse", key: "amk_1", fetchImpl });
+
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /could not reach https:\/\/v\/sse/);
+  assert.match(result.reason, /ECONNREFUSED/);
+});
+
+test("verifyConnection reports the status for a wrong path", async () => {
+  const fetchImpl = async () => ({ ok: false, status: 404 });
+
+  const result = await verifyConnection({ sseUrl: "https://v/sse", key: "amk_1", fetchImpl });
+
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /HTTP 404/);
+});
+
+test("connectCommand verifies the endpoint it just wrote and says so", async (t) => {
+  const home = tempHome();
+  const logs = [];
+  t.mock.method(console, "log", (msg) => logs.push(msg));
+  const { calls, fetchImpl } = scriptedFetch();
+
+  await connectCommand([encode("https://vault.example.com", "s"), "--client", "claude"], {
+    home,
+    fetchImpl,
+    spawnImpl: noClaudeCli,
+  });
+
+  const verify = calls.find((call) => call.url === "https://vault.example.com/sse");
+  assert.equal(verify.headers.Authorization, "Bearer amk_2");
+  assert.ok(logs.some((line) => /verified https:\/\/vault\.example\.com\/sse/.test(line)));
+});
+
+test("connectCommand says the endpoint is unverified instead of claiming success", async (t) => {
+  const home = tempHome();
+  const logs = [];
+  t.mock.method(console, "log", (msg) => logs.push(msg));
+  const { fetchImpl } = scriptedFetch({
+    sse: () => {
+      throw new Error("ECONNREFUSED");
+    },
+  });
+
+  await connectCommand([encode("https://vault.example.com", "s"), "--client", "claude"], {
+    home,
+    fetchImpl,
+    spawnImpl: noClaudeCli,
+  });
+
+  const output = logs.join("\n");
+  assert.match(output, /Could not verify the MCP endpoint/);
+  assert.match(output, /ECONNREFUSED/);
+  assert.doesNotMatch(output, /verified https/);
+  // Non-fatal: the config and the key are still on disk.
+  assert.equal(fs.existsSync(path.join(home, ".claude.json")), true);
+  assert.equal(fs.existsSync(path.join(home, ".archivum", "connection.json")), true);
+});
+
+test("connectCommand refuses a loopback SSE url for a remote vault before writing config", async () => {
+  const home = tempHome();
+  const { fetchImpl } = scriptedFetch({
+    redeemBody: { ...REDEEMED, sse_url: "http://localhost:8001/sse" },
+  });
+
+  await assert.rejects(
+    connectCommand([encode("https://vault.example.com", "s"), "--client", "claude"], {
+      home,
+      fetchImpl,
+      spawnImpl: noClaudeCli,
+    }),
+    /MCP_PUBLIC_URL/,
+  );
+
+  assert.equal(fs.existsSync(path.join(home, ".claude.json")), false);
+});
+
+test("assertReachableSseUrl allows a localhost vault and a localhost endpoint", () => {
+  assertReachableSseUrl("http://localhost:8000", "http://localhost:8001/sse");
+  assertReachableSseUrl("https://vault.example.com", "https://mcp.example.com/sse");
+});
+
+test("re-linking revokes the device key this machine held before", async (t) => {
+  const home = tempHome();
+  saveState(home, linkedState({ device_id: "dev_old", key: "amk_old" }));
+  const logs = [];
+  t.mock.method(console, "log", (msg) => logs.push(msg));
+  const { calls, fetchImpl } = scriptedFetch();
+
+  await connectCommand([encode("https://vault.example.com", "s"), "--client", "claude"], {
+    home,
+    fetchImpl,
+    spawnImpl: noClaudeCli,
+  });
+
+  const deletes = calls.filter((call) => call.method === "DELETE");
+  assert.equal(deletes.length, 1);
+  assert.equal(deletes[0].headers.Authorization, "Bearer amk_old");
+  assert.ok(logs.some((line) => /revoked the previous device key.*dev_old/.test(line)));
+  // The new key replaced the old one in the local record.
+  const state = JSON.parse(fs.readFileSync(path.join(home, ".archivum", "connection.json"), "utf8"));
+  assert.equal(state.key, "amk_2");
+});
+
+test("a previous key that cannot be revoked names its device id instead of aborting the link", async (t) => {
+  const home = tempHome();
+  saveState(home, linkedState({ device_id: "dev_old", key: "amk_old" }));
+  const logs = [];
+  t.mock.method(console, "log", (msg) => logs.push(msg));
+  const { fetchImpl } = scriptedFetch({
+    onDelete: () => {
+      throw new Error("ECONNREFUSED");
+    },
+  });
+
+  await connectCommand([encode("https://vault.example.com", "s"), "--client", "claude"], {
+    home,
+    fetchImpl,
+    spawnImpl: noClaudeCli,
+  });
+
+  assert.ok(logs.some((line) => /could not revoke the previous device key.*\(dev_old\)/.test(line)));
+  assert.ok(logs.some((line) => /revoke it from Settings/.test(line)));
+  const state = JSON.parse(fs.readFileSync(path.join(home, ".archivum", "connection.json"), "utf8"));
+  assert.equal(state.key, "amk_2");
+});
+
+test("a first link revokes nothing and says nothing about a previous key", async (t) => {
+  const home = tempHome();
+  const logs = [];
+  t.mock.method(console, "log", (msg) => logs.push(msg));
+  const { calls, fetchImpl } = scriptedFetch();
+
+  await connectCommand([encode("https://vault.example.com", "s"), "--client", "claude"], {
+    home,
+    fetchImpl,
+    spawnImpl: noClaudeCli,
+  });
+
+  assert.equal(calls.filter((call) => call.method === "DELETE").length, 0);
+  assert.ok(!logs.some((line) => /previous device key/.test(line)));
 });

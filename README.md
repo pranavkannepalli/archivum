@@ -88,17 +88,25 @@ and your `OWNER_PASSWORD`.
 ## Link your agents
 
 In Settings → Agent Access, click **Link a device**. Archivum shows a pairing
-token. On the machine you want to link — including the one running the server —
-run:
+token and the exact command to run on the machine you want to link — including
+the one running the server:
 
 ```bash
-npx archivum@latest connect arch1_...
+git clone https://github.com/pranavkannepalli/archivum.git
+cd archivum
+node packages/archivum-cli/src/index.js connect arch1_...
 ```
 
 That writes MCP config for whichever of Claude Code, Cursor, and Codex it finds on
-the machine, installs the `archivum-memory` skill into `~/.claude/skills/`, and
-prints the vault it paired with. The pairing token works once and expires after
-fifteen minutes, so issue a fresh one for each machine.
+the machine (Claude Code via `claude mcp add`), installs the `archivum-memory`
+skill into `~/.claude/skills/`, then calls the MCP endpoint it just configured
+with the new key and tells you whether it answered. If it did not, it says so and
+what to check, rather than reporting a link that does not work. The pairing token
+works once and expires after fifteen minutes, so issue a fresh one for each
+machine.
+
+Re-running `connect` on a machine that is already linked revokes the key it held
+before, so one machine never accumulates two live keys.
 
 The machine needs no checkout and no `.env`: the server's URL travels inside the
 token, which is why one string is all you copy.
@@ -112,18 +120,13 @@ archivum connect --revoke   # revoke this machine's key and delete its local rec
 revocation, so a failed revoke never leaves you with a live key and no note of
 which device to revoke from Settings.
 
-> **Getting the CLI today.** The CLI is published to GitHub Packages as
+> **Why the clone.** The CLI is published to GitHub Packages as
 > `@pranavkannepalli/archivum` and is not yet on the public npm registry, so
-> `npx archivum@latest` does not resolve. Until it is published there, clone the
-> repo on the machine you are linking and run it from the checkout. No `npm
-> install` and no `.env` — the CLI has no dependencies, and `connect` reads none
-> of the repo's config:
->
-> ```bash
-> git clone https://github.com/pranavkannepalli/archivum.git
-> cd archivum
-> node packages/archivum-cli/src/index.js connect arch1_...
-> ```
+> `npx archivum@latest connect <token>` does not resolve — and `archivum` on
+> public npm is a name this project does not own, which is not a package to hand
+> a live pairing token. The clone needs no `npm install` and no `.env`: the CLI
+> has no dependencies and `connect` reads none of the repo's config. It becomes
+> one `npx` line once the package is published.
 
 ### Per-device keys
 
@@ -133,7 +136,9 @@ laptop costs you one key instead of a rotation across every client you own.
 
 If you set `MCP_API_KEY`, it still authenticates, and Settings shows it as
 `legacy shared key` — a credential to retire once each machine is linked
-individually.
+individually. It lives in `.env` rather than in the device table, so retiring it
+means unsetting `MCP_API_KEY` and restarting the stack; there is no per-row
+revoke for it.
 
 ### Configuring a client by hand
 

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { parseOptions } from "./util.js";
+import { parseOptions, writeFileAtomic } from "./util.js";
 import { CLIENT_WRITERS, detectClients } from "./clients.js";
 
 const STATE_DIR = ".archivum";
@@ -60,6 +60,72 @@ function assertKnownClients(clients) {
   }
 }
 
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "0.0.0.0"]);
+
+function isLoopback(url) {
+  try {
+    return (
+      LOOPBACK_HOSTS.has(new URL(url).hostname.toLowerCase().replace(/^\[|\]$/g, "")) ||
+      new URL(url).hostname.toLowerCase().endsWith(".localhost")
+    );
+  } catch {
+    return false;
+  }
+}
+
+// `MCP_PUBLIC_URL` is optional on the server, and its fallback is
+// `http://localhost:8001/sse` — which, written into this machine's client
+// configs, names *this* machine's port 8001 rather than the vault. The server
+// refuses to issue such a URL, but an older server, or one behind a proxy that
+// rewrites it, still can; the failure otherwise surfaces days later as an
+// unexplained MCP connection error with no thread back to pairing.
+export function assertReachableSseUrl(baseUrl, sseUrl) {
+  if (!isLoopback(sseUrl) || isLoopback(baseUrl)) return;
+  throw new Error(
+    `The server handed back an MCP endpoint of ${sseUrl}, but this vault is at ${baseUrl}. ` +
+      "A loopback endpoint points at this machine, not at the vault, so no client config was written. " +
+      "Set MCP_PUBLIC_URL on the server to the URL its MCP port is reachable at, restart the stack, and link again.",
+  );
+}
+
+// The spec's step 4: do not report success for an endpoint nobody has spoken
+// to. Every misconfiguration of the MCP URL — a proxy that fronts the API but
+// not the MCP port, a wrong MCP_PUBLIC_URL path, a key the server does not
+// know — otherwise produces a confident "Linked to ..." and a broken agent.
+// A GET on the SSE endpoint with the device key is answered by the same
+// bearer middleware every tool call goes through, so a 200 means this exact
+// URL and this exact key work together.
+export async function verifyConnection({ sseUrl, key, fetchImpl = fetch }) {
+  let response;
+  try {
+    response = await fetchImpl(sseUrl, {
+      headers: { Authorization: `Bearer ${key}`, Accept: "text/event-stream" },
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      reason: `could not reach ${sseUrl} (${error.message})`,
+      hint: "Check that the MCP port is exposed through the same proxy as the API, and that MCP_PUBLIC_URL matches it.",
+    };
+  }
+  // Headers are all we need; an SSE stream left open would hold the process.
+  await Promise.resolve(response.body?.cancel?.()).catch(() => {});
+  if (response.ok) return { ok: true };
+  if (response.status === 401 || response.status === 403) {
+    return {
+      ok: false,
+      reason: `${sseUrl} refused this device key (HTTP ${response.status})`,
+      hint: "The key was minted seconds ago, so this usually means the URL belongs to a different server.",
+    };
+  }
+  return {
+    ok: false,
+    reason: `${sseUrl} answered HTTP ${response.status}`,
+    hint: "Check MCP_PUBLIC_URL on the server — it must include the /sse path and point at the MCP port.",
+  };
+}
+
 export async function installSkill({ home, skillUrl, fetchImpl = fetch }) {
   const response = await fetchImpl(skillUrl).catch(() => null);
   // A server without a bundled skill is a working server; linking must not fail
@@ -77,14 +143,10 @@ function statePath(home) {
 }
 
 export function saveState(home, state) {
-  const file = statePath(home);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
-  // `mode` on writeFileSync only applies when the file is created; a re-link
-  // onto a file that already existed would otherwise keep its prior mode.
-  // This file holds the raw device key, so tighten it every time.
-  fs.chmodSync(file, 0o600);
-  return file;
+  // Atomic, and 0600 every time: this file holds the raw device key, and a
+  // re-link onto a file that already existed must not inherit its prior mode
+  // or leave a truncated stub if the write dies halfway.
+  return writeFileAtomic(statePath(home), `${JSON.stringify(state, null, 2)}\n`);
 }
 
 function readState(home) {
@@ -130,7 +192,24 @@ export async function revoke(home, { fetchImpl = fetch } = {}) {
   console.log("Revoked. Remove the archivum entry from your MCP clients if you want it gone from disk.");
 }
 
-export async function connectCommand(args, { home = os.homedir(), fetchImpl = fetch } = {}) {
+// A re-link (a second machine's worth of clients, a fresh token after
+// reinstalling an agent) used to overwrite the local record and leave the old
+// device key live on the server forever, under a near-identical name, with
+// nothing on this machine that remembers it. "Losing a laptop costs you one
+// key" only holds if a machine has one key.
+async function revokePreviousLink(previous, { fetchImpl }) {
+  if (!previous?.key || !previous?.base_url) return null;
+  const response = await fetchImpl(`${previous.base_url}/api/mcp/devices/self`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${previous.key}` },
+  }).catch(() => null);
+  return { deviceId: previous.device_id, revoked: Boolean(response?.ok) };
+}
+
+export async function connectCommand(
+  args,
+  { home = os.homedir(), fetchImpl = fetch, spawnImpl } = {},
+) {
   const { flags, values, positionals } = parseOptions(args);
 
   if (flags.has("status")) return status(home, { fetchImpl });
@@ -152,8 +231,12 @@ export async function connectCommand(args, { home = os.homedir(), fetchImpl = fe
   assertKnownClients(clients);
 
   const deviceName = values.get("name") ?? `${os.hostname()} / ${clients.join("+")}`;
+  // Read before redeem, revoked after the new key is safely on disk: if redeem
+  // fails, this machine keeps the key it already had.
+  const previous = readState(home);
   const details = await redeem({ baseUrl, secret, deviceName, fetchImpl });
   assertRedeemResult(details);
+  assertReachableSseUrl(baseUrl, details.sse_url);
 
   // Save state before running any client writer or fetching the skill: the
   // token is spent and the key is live on the server the instant redeem
@@ -168,18 +251,46 @@ export async function connectCommand(args, { home = os.homedir(), fetchImpl = fe
     clients,
   });
 
+  const retired = await revokePreviousLink(previous, { fetchImpl });
+
   const written = [];
   for (const client of clients) {
-    written.push(CLIENT_WRITERS[client]({ home, sseUrl: details.sse_url, key: details.key }));
+    written.push(
+      CLIENT_WRITERS[client]({ home, sseUrl: details.sse_url, key: details.key, spawnImpl }),
+    );
   }
 
   const skillPath = details.skill_url
     ? await installSkill({ home, skillUrl: details.skill_url, fetchImpl })
     : null;
 
+  const verification = await verifyConnection({
+    sseUrl: details.sse_url,
+    key: details.key,
+    fetchImpl,
+  });
+
   console.log(`Linked to ${details.vault_name ?? baseUrl} as "${deviceName}".`);
   for (const file of written) console.log(`  configured ${file}`);
   if (skillPath) console.log(`  installed ${skillPath}`);
+  if (retired) {
+    console.log(
+      retired.revoked
+        ? `  revoked the previous device key for this machine (${retired.deviceId})`
+        : `  could not revoke the previous device key for this machine (${retired.deviceId}) — revoke it from Settings`,
+    );
+  }
+
+  if (verification.ok) {
+    console.log(`  verified ${details.sse_url} answers this device key`);
+  } else {
+    // Loud, and not fatal: the key is real and on disk, so telling the user to
+    // start over would cost them a token for a problem re-linking cannot fix.
+    console.log(`\nCould not verify the MCP endpoint: ${verification.reason}.`);
+    console.log(`  ${verification.hint}`);
+    console.log("  The configs above were written and the device key is valid;");
+    console.log("  re-check with: archivum connect --status");
+  }
   console.log("\nFor claude.ai or ChatGPT, add a custom connector:");
   console.log(`  URL:    ${details.sse_url}`);
   console.log(`  Header: Authorization: Bearer ${details.key}`);

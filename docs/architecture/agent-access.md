@@ -13,27 +13,25 @@ Two steps, one of them in the browser.
 2. On the machine you are linking, run:
 
 ```bash
-npx archivum@latest connect arch1_...
-```
-
-That is the whole thing. `connect` needs no checkout and no `.env`, which is the
-point: the second laptop has neither. Everything it needs arrives in the token
-and in the redeem response.
-
-The CLI is published to GitHub Packages as `@pranavkannepalli/archivum` and is not
-on the public npm registry yet, so `npx archivum@latest` does not resolve today.
-Until it is published there, clone the repo on the machine you are linking and run
-it from the checkout:
-
-```bash
 git clone https://github.com/pranavkannepalli/archivum.git
 cd archivum
 node packages/archivum-cli/src/index.js connect arch1_...
 ```
 
-That needs Node 20+ and nothing else — the CLI has no dependencies, so there is no
-`npm install` step, and `connect` still reads no `.env`. It is a worse story than
-one `npx` line, and it goes away when the package is published.
+That is the whole thing. `connect` reads nothing from the checkout it is run
+from — no `.env`, no `docker-compose.yml`. Everything it needs arrives in the
+token and in the redeem response, which is the point: the second laptop has
+neither a vault nor a configured repo.
+
+It needs Node 20+ and nothing else — the CLI has no dependencies, so there is no
+`npm install` step, and `connect` still reads no `.env`. The clone is a stand-in
+for one `npx` line: the CLI is published to GitHub Packages as
+`@pranavkannepalli/archivum` and not to the public npm registry, so
+`npx archivum@latest connect <token>` does not resolve today — and `archivum` on
+public npm is a name this project does not own, so it must not be the line anyone
+runs against a live pairing token. Settings prints the clone form for the same
+reason. It becomes `npx archivum@latest connect <token>` once the package is
+published.
 
 In order, `connect`:
 
@@ -44,15 +42,39 @@ In order, `connect`:
    touches any client config. The token is spent the instant redeem returns, so a
    writer failing halfway must still leave the key recoverable rather than
    orphaned on the server.
-3. Writes MCP config for every supported client it detects — `~/.claude.json`,
-   `~/.cursor/mcp.json`, `~/.codex/config.toml` — each at mode `0600`, tightening
-   the file even if it already existed with looser permissions. Pass
+3. Revokes the device key this machine held before, if there is one, by calling
+   `DELETE /api/mcp/devices/self` with the old key. Re-linking replaces a key
+   rather than leaving a second live one on the server under a near-identical
+   name. Best-effort: if the old key cannot be revoked, `connect` prints its
+   `device_id` so you can revoke it from Settings, and carries on.
+4. Writes MCP config for every supported client it detects. For Claude Code it
+   runs `claude mcp add --scope user --transport sse archivum <url> --header
+   "Authorization: Bearer amk_…"` — preceded by a `claude mcp remove` so a
+   re-link is idempotent — and falls back to writing `~/.claude.json` only when
+   the `claude` CLI is absent or the add fails. `~/.claude.json` is Claude Code's
+   live state file, so staying out of it is worth a subprocess. Cursor
+   (`~/.cursor/mcp.json`) and Codex (`~/.codex/config.toml`) are written directly,
+   each at mode `0600`, tightening the file even if it already existed with
+   looser permissions, and each written to a temp file and renamed into place so
+   an interrupted write cannot truncate a config. Pass
    `--client claude|cursor|codex` to pin the set instead of detecting it.
-4. Installs the `archivum-memory` skill to `~/.claude/skills/archivum-memory/`,
+5. Installs the `archivum-memory` skill to `~/.claude/skills/archivum-memory/`,
    fetched from the server at `GET /api/mcp/skill`. A server that does not bundle
    the skill is still a working server, so a missing skill does not fail the link.
-5. Prints the connector URL and bearer header for claude.ai and ChatGPT, which
+6. Verifies the endpoint it just wrote: a request to the SSE URL carrying the new
+   device key, answered by the same bearer check every tool call goes through. A
+   200 is reported as `verified <url> answers this device key`. Anything else —
+   unreachable, refused, wrong path — is printed as a failure to verify, with
+   what to check, instead of a confident "Linked to …". It is not fatal: the key
+   is real and on disk, and re-linking would not fix a server-side URL.
+7. Prints the connector URL and bearer header for claude.ai and ChatGPT, which
    cannot be configured from a terminal.
+
+`connect` refuses outright if the server hands back a loopback SSE URL
+(`http://localhost:8001/sse`) for a vault that is not itself on localhost: that
+URL names the machine being linked, not the vault. Set `MCP_PUBLIC_URL` on the
+server. The server makes the same check before it burns the token, so this is a
+backstop for older servers and rewriting proxies.
 
 Restart the agent afterwards; MCP clients read their config at startup.
 
