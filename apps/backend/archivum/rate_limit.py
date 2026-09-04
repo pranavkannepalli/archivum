@@ -68,6 +68,15 @@ def rate_limit_policy_for_path(path: str, settings: Settings) -> RateLimitPolicy
             window_seconds=settings.rate_limit_login_window_seconds,
         )
 
+    # Its own bucket rather than the login bucket: deploy.md records that
+    # scripted traffic through the Cloudflare tunnel trips the shared login
+    # limiter, and pairing is exactly the scripted case.
+    if path.startswith("/api/mcp/pairing/redeem"):
+        return RateLimitPolicy(
+            limit=settings.rate_limit_pairing_requests,
+            window_seconds=settings.rate_limit_pairing_window_seconds,
+        )
+
     # “Rate limit everything” under /api so paid/expensive endpoints
     # can’t be hammered.
     if path.startswith("/api/"):

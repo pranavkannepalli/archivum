@@ -185,6 +185,8 @@ class Settings(BaseSettings):
     rate_limit_login_window_seconds: int = 600  # 10 minutes
     rate_limit_api_requests: int = 120
     rate_limit_api_window_seconds: int = 60
+    rate_limit_pairing_requests: int = 10
+    rate_limit_pairing_window_seconds: int = 600  # 10 minutes
 
     # ── MCP ────────────────────────────────────────────────────────────────
     mcp_host: str = "127.0.0.1"
