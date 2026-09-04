@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import aiosqlite
 import pytest
 
@@ -107,3 +109,48 @@ async def test_expired_and_already_redeemed_are_indistinguishable(conn):
         await live.redeem("never-existed", "again")
 
     assert str(used_exc.value) == str(expired_exc.value) == str(unknown_exc.value)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_redeems_of_same_token_only_succeed_once(conn):
+    """Test that concurrent redeems of the same token are serialized correctly.
+
+    Even with concurrent calls, only one should succeed; the second should fail
+    with PairingError and its minted device should be revoked. This tests the
+    TOCTOU race fix where both calls might mint devices before either UPDATE
+    completes.
+    """
+    service = PairingService(conn)
+    token, _ = await service.issue("https://vault.example.com")
+    _, secret = decode_pairing_token(token)
+
+    success_count = 0
+    failure_count = 0
+
+    async def attempt_redeem(name):
+        nonlocal success_count, failure_count
+        try:
+            device, key = await service.redeem(secret, name)
+            success_count += 1
+        except PairingError:
+            failure_count += 1
+
+    # Run both redeems concurrently
+    await asyncio.gather(
+        attempt_redeem("device1"),
+        attempt_redeem("device2"),
+    )
+
+    # Exactly one should succeed
+    assert success_count == 1
+    assert failure_count == 1
+
+    # Verify that both devices were minted, but one was revoked
+    async with conn.execute(
+        "SELECT * FROM device_keys ORDER BY created_at"
+    ) as cur:
+        devices = await cur.fetchall()
+
+    assert len(devices) == 2, "Both concurrent mints should succeed"
+    revoked = [d for d in devices if d["revoked_at"] is not None]
+    assert len(revoked) == 1, "Exactly one device should be revoked (the loser's)"

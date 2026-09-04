@@ -84,10 +84,18 @@ class PairingService:
             raise PairingError(_REFUSED)
 
         device, raw_key = await self.devices.mint(device_name, wiki_id=row["wiki_id"])
-        await self.conn.execute(
+        update_cur = await self.conn.execute(
             "UPDATE pairing_tokens SET redeemed_at=datetime('now'), device_id=? "
             "WHERE id=? AND redeemed_at IS NULL",
             (device["id"], row["id"]),
         )
+
+        # Check if the UPDATE actually modified the token row.
+        # If rowcount is 0, another concurrent redeem got there first.
+        # Revoke the device we just minted and raise the generic error.
+        if update_cur.rowcount == 0:
+            await self.devices.revoke(device["id"])
+            raise PairingError(_REFUSED)
+
         await self.conn.commit()
         return device, raw_key
